@@ -1,0 +1,37 @@
+1. Update and upgrade
+
+sudo apt update.
+sudo apt full-upgrade.
+sudo reboot.
+
+2. Open config
+
+sudo raspi-config
+
+3a. Install jupyter 
+
+sudo apt-get install jupyter-notebook
+
+3b. Launch jupyter notebook
+
+jupyter notebook
+
+4a. Create Virtual Environment
+
+python3 -m venv foobar
+
+4b. Activate Virtual Environment
+
+source foobar/bin/activate
+
+5. check ip address (192.168.1.86)
+
+ifconfig
+
+6. connect via ssh
+
+ssh <username>@<ip address>
+
+7. Test camera
+
+libcamera-vud -t 10000
