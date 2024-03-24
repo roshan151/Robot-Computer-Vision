@@ -28,10 +28,14 @@ source foobar/bin/activate
 
 ifconfig
 
-6. connect via ssh
+6. Test camera
+
+libcamera-vud -t 10000
+
+7. connect via ssh
 
 ssh <username>@<ip address>
 
-7. Test camera
+7a. To redirect jupyter notebook via ssh to PC
 
-libcamera-vud -t 10000
+ssh -L 8888:localhost:8888 <username>@<ip address>
