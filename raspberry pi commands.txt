@@ -39,5 +39,3 @@ ssh <username>@<ip address>
 7a. To redirect jupyter notebook via ssh to PC
 
 ssh -L 8888:localhost:8888 <username>@<ip address>
-
-openai_secret: sk-proj-u7ydEF7LGzlbauNeL1Ek1K0Ls4PFOj2eAw_v8eNydPJH1RpLwBY9Id3bfSGHzttELrd3Yi78H7T3BlbkFJL_gSg4ud1XqfIpAAsLxd-ol-UW-Y4KpvQIbetS09WGw7F_xihgrFPPdhB97wHNqrvOoQK41
