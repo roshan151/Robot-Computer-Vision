@@ -1,0 +1,19 @@
+Bluetooth:
+Run sudo bluetoothctl to start the bluetooth control tool.
+Connect Raspberry Pi to Bluetooth
+
+# Bluetooth IDE
+discoverable on
+pairable on
+agent on
+default-agent
+scan on
+
+JBL Buds: B4:84:D5:B9:14:23
+pair B4:84:D5:B9:14:23
+trust B4:84:D5:B9:14:23
+
+To connect:
+bluetoothctl connect B4:84:D5:B9:14:23
+
+Use pulse audio UI to set bluetooth headphones to Hands free protocol (hfp). (a2dp is for audio only)                                                                             
