@@ -15,7 +15,7 @@ Fix: Host a containerized model using flask api and use ngrok for hosting. Pi ca
 
 # Voice Control Features
 To interface with the robot while its running I am currently using voice control from my bluetooth buds.
-Bluetooth connection is provided using pulseaudio module (bluetooth buds card is set to hfp for both input and output)
+Bluetooth connection is provided using pulseaudio module (bluetooth buds card is set to hfp for both input and output).
 I am using speech_recognition library with google cloud speech recognition service for speech to text conversion.
 Currently the robot supports single word commands - forward, reverse, right, left, stop.
 pyttsx3 library provides text to speech output to prompt user for input and relay any error messages.
