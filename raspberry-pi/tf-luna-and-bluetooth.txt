@@ -1,3 +1,13 @@
+Setting up TF Luna:
+1. sudo nano /boot/firmware/config.txt
+- Add enable_uart=1 to config file
+2. sudo reboot
+3. ls -l /dev/serial*
+- check ttyS0 is present in the serial list
+
+Provide user access to ttyS0 every time after reboot
+sudo chmod 666 /dev/ttyS0
+
 Bluetooth:
 Run sudo bluetoothctl to start the bluetooth control tool.
 Connect Raspberry Pi to Bluetooth
@@ -16,4 +26,15 @@ trust B4:84:D5:B9:14:23
 To connect:
 bluetoothctl connect B4:84:D5:B9:14:23
 
-Use pulse audio UI to set bluetooth headphones to Hands free protocol (hfp). (a2dp is for audio only)                                                                             
+# PULSE AUDIO
+To check pulseaudio cards:
+1. pulseaudio --start
+2. pactl list
+
+Use pulse audio UI to set bluetooth headphones to Hands free protocol (hfp). (a2dp is for audio only)    
+To set the hfp card from command line:
+sudo -u '#1000' XDG_RUNTIME_DIR=/run/user/1000 set-card-profile bluez_card.B4_84_D5_B9_14_23 handsfree_head_unit
+
+Where 1000 is user id, Get user id using:
+id -u roshan151
+
