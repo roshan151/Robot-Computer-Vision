@@ -16,10 +16,10 @@ Fix: Host a containerized model using flask api and use ngrok for hosting. Pi ca
 Top View:
 ![PXL_20241207_170700225](https://github.com/user-attachments/assets/65aa1004-ad71-4d3f-be6d-fdf788f3cd46)
 
-Front View:
+Side View:
 ![PXL_20241207_170650358](https://github.com/user-attachments/assets/bf1c318c-c084-4d42-8a80-22c9ce910a82)
 
-Side View:
+Front View:
 ![PXL_20241207_170641184](https://github.com/user-attachments/assets/504cd7a0-b8d2-4fd7-ae23-dbf517e464cc)
 
 # Resources:
