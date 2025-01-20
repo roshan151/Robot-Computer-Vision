@@ -6,13 +6,12 @@ Setting up TF Luna:
 - check ttyS0 is present in the serial list
 
 Provide user access to ttyS0 every time after reboot
-sudo chmod 666 /dev/ttyS0
+1. sudo chmod 666 /dev/ttyS0
 
-Bluetooth:
-Run sudo bluetoothctl to start the bluetooth control tool.
-Connect Raspberry Pi to Bluetooth
+# To start the bluetooth IDE.
+1. sudo bluetoothctl 
 
-# Bluetooth IDE
+# Inside Bluetooth IDE
 discoverable on
 pairable on
 agent on
@@ -23,18 +22,22 @@ JBL Buds: B4:84:D5:B9:14:23
 pair B4:84:D5:B9:14:23
 trust B4:84:D5:B9:14:23
 
-To connect:
-bluetoothctl connect B4:84:D5:B9:14:23
 
 # PULSE AUDIO
 To check pulseaudio cards:
 1. pulseaudio --start
 2. pactl list
 
-Use pulse audio UI to set bluetooth headphones to Hands free protocol (hfp). (a2dp is for audio only)    
-To set the hfp card from command line:
-sudo -u '#1000' XDG_RUNTIME_DIR=/run/user/1000 pactl set-card-profile bluez_card.B4_84_D5_B9_14_23 handsfree_head_unit
+# In the below comman 1000 is user id for user roshan151, Get user id using:
+1. id -u roshan151
 
-Where 1000 is user id for user roshan151, Get user id using:
-id -u roshan151
+### REPEAT ON REBOOT ###
+# connect to bluetooth:
+1. bluetoothctl connect B4:84:D5:B9:14:23
 
+# Use pulse audio UI to set bluetooth headphones to Hands free protocol (hfp). (a2dp is for audio only)    
+# To set the hfp card from command line:
+2. sudo -u '#1000' XDG_RUNTIME_DIR=/run/user/1000 pactl set-card-profile bluez_card.B4_84_D5_B9_14_23 handsfree_head_unit
+
+#For TF Luna lidar sensor - Provide user access to ttyS0 every time after reboot
+3. sudo chmod 666 /dev/ttyS0

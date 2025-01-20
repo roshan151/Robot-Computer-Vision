@@ -30,7 +30,7 @@ ifconfig
 
 6. Test camera
 
-libcamera-vud -t 10000
+libcamera-vid -t 10000
 
 7. connect via ssh
 
@@ -38,4 +38,5 @@ ssh <username>@<ip address>
 
 7a. To redirect jupyter notebook via ssh to PC
 
+ssh -L 8888:localhost:8888 <username>@<ip address>
 ssh -L 8888:localhost:8888 <username>@<ip address>
