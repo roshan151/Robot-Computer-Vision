@@ -12,10 +12,13 @@ router = APIRouter()
 
 class computer_vision:
 
-    def __init__(self, model_name :str = "yolov8m.pt"): 
+    def __init__(self, model_name :str = "yolov8m.pt"):
+        # Instantiate a CNN model 
         self.model = YOLO(model_name)
 
-    def detect_plant(self, result, objects : list = ['plant', 'plants', 'leaf', 'leaves']):
+
+    #Loop through the identified box coordinates and check any of them is a plant/leaf 
+    def detect_plant(self, result, objects : list):
 
         for r in result:
             boxes = r.boxes
@@ -32,7 +35,7 @@ class computer_vision:
 
         return frame
 
-    
+    # Process the frame through model
     def predict_frame(self, frame):
 
         frame = self.preprocess_frame(frame)
@@ -43,10 +46,14 @@ class computer_vision:
 
 cv = computer_vision()
 
-@router.post('/detect_plants:frame')
-def predict(frame_json : Dict, my_response: Response):
+@router.post('/detect_objects:frame')
+def predict(frame_json : Dict, cv : computer_vision = cv):
 
     im_b64 = frame_json['image']
+    objects = frame_json['objects']
+
+    if objects == None:
+        objects = ['plant', 'plants', 'leaf', 'leaves']
 
     # convert it into bytes  
     img_bytes = base64.b64decode(im_b64.encode('utf-8'))
@@ -57,7 +64,6 @@ def predict(frame_json : Dict, my_response: Response):
     img_arr = np.asarray(img)      
     response = cv.predict_frame(img_arr)
 
-    print(response)
     frame_json['response'] = response
 
     return frame_json

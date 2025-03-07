@@ -1,37 +1,25 @@
-import cv2
+import os
+import json
 import time
 import datetime
+import base64
+import openai
+import requests
 from picamera2 import Picamera2
 import multiprocessing
-from ultralytics import YOLO
-
+from prompts_and_glossary import movement_prompt, commands
 import sounddevice as sd
 import speech_recognition as sr
 from drivetrain import movement
 from flask import Flask, render_template, Response
-
+from dotenv import load_dotenv
 import sys
+
 sys.path.append('/home/roshan151/nix-tts/nix-tts')
 from nix.models.TTS import NixTTSInference
 
 class voice:
     # Movement Commands dictionary
-    commands = {
-        'movement' : {
-            'straight': {'command' : 'straight', 'complement' : 'reverse'}, 
-            'forward' : {'command' : 'straight', 'complement' : 'reverse'},
-            'reverse' : {'command' : 'reverse', 'complement' : 'straight'},
-            'back' : {'command': 'reverse', 'complement' : 'straight'},
-            'backwards' : {'command' : 'reverse', 'complement' : 'straight' } ,
-            'right' : {'command' : 'right', 'complement' : 'left'},
-            'write' : {'command' : 'right', 'complement' : 'left'},
-            'left' : {'command' : 'left', 'complement' : 'right'},
-            'stop' : {'command' : 'stop', 'complement' : None}
-        },
-        'vision' : ['vision', 'see', 'look'],
-        'terminate' : ['shut', 'terminate'],
-        'origin' : ['origin', 'return']
-    }
 
     history = []
 
@@ -47,6 +35,9 @@ class voice:
         # Initiate Nix-TTS
         self.samplerate = 22050
         self.nix = NixTTSInference(model_dir = "/home/roshan151/nix-tts/nix-deterministic/nix-deterministic")
+
+        load_dotenv()
+        self.openai_api_key = os.getenv("OPENAI_API_KEY_ROBIN")
         
     def speak(self, text : str):
         c, c_length, phoneme = self.nix.tokenize(text)
@@ -54,6 +45,30 @@ class voice:
         xw = self.nix.vocalize(c, c_length)
         sd.play(xw[0,0], self.samplerate)
         sd.wait() 
+
+    def query_gpt(self, messages, model="gpt-4o-mini", temperature=0.9, max_tokens=1500):
+        """
+        param prompt: The input text prompt.
+        param api_key: Your OpenAI API key.
+        param model: The OpenAI model to use (default: gpt-3.5-turbo).
+        param temperature: Sampling temperature (higher values make output more random).
+        param max_tokens: Maximum number of tokens to generate.
+        """
+        openai.api_key = self.openai_api_key
+        client = openai.OpenAI(api_key=self.openai_api_key)
+        
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            return response.choices[0].message.content.strip()
+        
+        except Exception as e:
+            return f"Error: {str(e)}"
     
     def origin(self):
         '''
@@ -67,6 +82,52 @@ class voice:
             
             eval(f'self.move.{complement}()')
 
+    def scan(self, objects, interval = 15, span = 180):
+        '''
+        Scan the area by turning small angles (interval) and clicking a picture
+        These pictures will be sent in a batch for object detection
+        '''
+
+        left, right = 0, 0
+        pictures = []
+        angles = []
+
+        # Click pictures on left
+        while left<span//2:
+            self.move.left(interval)
+            image_name = self.vision.action('capture')
+            pictures.append(image_name)
+            angles.append(-1*left)
+            left += interval
+
+        # Back to center
+        self.move.right(left)
+
+        # Click pictures on right
+        while right<span//2:
+            self.move.right(interval)
+            image_name = self.vision.action('capture')
+            pictures.append(image_name)
+            angles.append(-1*right)
+            right += interval
+
+        # Back to center
+        self.move.left(right)
+        angle = 0
+        for idx, i in enumerate(pictures, objects):
+            detect = self.vision.detect_image(i)
+            if detect == True:
+                angle = angles[idx]
+                break
+
+        if angle<0:
+            self.move.left(abs(angle))
+        elif angle >0:
+            self.move.right(angle)
+
+        return pictures, angles
+        
+
     def initiate(self, move : movement, vision = None):
 
         self.move = move
@@ -74,7 +135,7 @@ class voice:
 
         # This cell runs the voice recognition loop
         self.listen = True
-        
+        messages = [{'role' : 'system', 'content' : movement_prompt}]
         while self.listen:
             with self.mic as source:
                 self.rec.adjust_for_ambient_noise(source)
@@ -88,23 +149,37 @@ class voice:
                     continue
 
             #print(f"Recognized speech: {speech}")  # Debug output
-            words = speech.lower().split()
-            
-            for word in words:
-                if word in self.commands['movement'].keys():
-                    val = self.commands['vision'][word]['command']
+            query = speech.lower()
+            messages.append({'role': 'user', 'content': query})
 
-                    self.history.append(word)
+            query_commands = self.query_gpt3(messages)
+
+            messages.append([{'role' : 'assistant', 'content' : query_commands}])
+
+            for item in query_commands:
+                word = item.keys()[0]
+                value = item[word]
+
+                if word in self.commands['movement'].keys():
+                    self.history.append({word : value})
 
                     # Execute movement
-                    eval(f'self.move.{val}()')
+                    eval(f'self.move.{word}({value})')
 
                 elif word in self.commands['vision']:
 
                     if self.vision:
                         self.vision_started = True
                         self.vision.initiate()
-                        multiprocessing.Process(target=self.vision.action).start()
+
+                        response = self.vision.action(value)
+
+                        if value == 'detect':
+                            if response:
+                                self.speak(f'Required objects found')
+                            else:
+                                self.speak(f'Required objects not found')
+                            
                     else:
                         self.speak(f'Command {word} not found. Breaking loop.')
 
@@ -115,7 +190,7 @@ class voice:
 
                 elif word in self.commands['origin']:
                     
-                    self.origin()
+                    self.origin(value)
                     self.history = []
 
                 else:
@@ -129,126 +204,80 @@ class voice:
 
 class vision:
 
-    def __init__(self, act : str = 'record'):
-
-        # Yolo v8 model from ultralytics 
-        self.model = YOLO("yolov8m.pt")
+    def __init__(self, act : str = 'detect'):
 
         self.picam = Picamera2()
-        self.picam.configure(self.picam.create_preview_configuration(main = {"format":'XRGB8888', "size" : (2592, 1944)}))
 
         # Flag to start or stop vision
         self.stop = False
         self.act= act
 
-    def initiate(self):
-        cv2.startWindowThread()
-        self.picam.start()
-
-        #self.vid = cv2.VideoCapture(0, cv2.CAP_V4L2)
-        #fps = self.vid.get(cv2.CAP_PROP_FPS)
-
     def terminate(self):
         if self.act == 'record':
             self.picam.stop_recording()
-        elif self.act in ['detect_objects', 'stream']:
-            self.stop = True
+
+        self.picam.stop()
 
     def action(self):
         if self.act == 'record':
             self.record()
-        elif self.act == 'detect_objects':
-            self.detect_objects()
+        elif self.act == 'detect':
+            self.detect()
         elif self.act == 'capture':
             self.capture()
-        elif self.act == 'stream':
-            self.stream()
 
     def record(self):
         # Configure for video recording
         self.picam.configure(self.picam.create_video_configuration())
+        self.picam.start()
+
+        # using now() to get current time
+        current_time = datetime.datetime.now()
+
+        file_name = f"video-{current_time}.mp4"
+        
         # Start recording video
-        self.picam.start_recording("video.mp4")
-
-    def stream(self, predict : bool= False):
-        app = Flask(__name__)
-
-        @app.route('/')
-        def index():
-            return render_template('index.html')
-
-        def gen(self):     
-            #get camera frame
-            while self.stop == False:
-                frame = self.picam.capture_array()
-
-                if predict == True:
-
-                    frame = self.preprocess_frame(frame)
-                    results = self.model(frame)
-
-                    # Plot results
-                    frame = results[0].plot()
-
-                    #ret, frame = cv2.imencode('.jpg', frame)
-                yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame.tobytes() + b'\r\n\r\n')
-                
-        @app.route('/video_feed')
-        def video_feed():
-            return Response(gen(self.picam),
-                            mimetype='multipart/x-mixed-replace; boundary=frame')
-
-        app.run(host='0.0.0.0', debug=False)
+        self.picam.start_recording(file_name)
+        return file_name
 
     def capture(self):
+
         # Configure for still image capture
         self.picam.configure(self.picam.create_still_configuration())
 
         # using now() to get current time
         current_time = datetime.datetime.now()
 
+        image_name = f"image-{current_time}.jpg"
         # Capture a picture
-        self.picam.capture_file(f"image-{current_time}.jpg")
+        self.picam.capture_file(image_name)
 
-    def process_frame(self, result, detect : list):
+        return image_name
+
+    def detect(self, objects):
         
-        boxes = result.boxes
-        all_classes = []
-        # Loop over all boxes detected by the model
-        for box in boxes:
+        image_name = self.capture()
+        with open(image_name, "rb") as f:
+            im_bytes = f.read()        
+        im_b64 = base64.b64encode(im_bytes).decode("utf8")
+        headers = {'content-type' : 'application/json'}
 
-            class_name = self.model.names[int(box.cls)]
-
-            # Return class name if this is what we are looking for
-            all_classes.append(class_name)
-            if class_name in detect:
-                return True, all_classes
-                
-        return False, all_classes
+        ip = f'**:**:**:**' # Remote systems ip address
+        response = requests.post(f'http://{ip}:8080/detect_plants:frame', headers = headers, json =  { "image": im_b64, "objects" : objects } )
+        result = json.loads(response.content)
+        return result['response']
     
-    def preprocess_frame(self):
-        if frame.shape[2] == 4:  # Check if there are 4 channels
-            frame = frame[:, :, :3]  # Keep only the first 3 channels
+    def detect_image(self, image_name, objects = None):
+        
+        with open(image_name, "rb") as f:
+            im_bytes = f.read()        
+        im_b64 = base64.b64encode(im_bytes).decode("utf8")
+        headers = {'content-type' : 'application/json'}
+        ip = f'**:**:**:**' # Remote systems ip address
+        response = requests.post(f'http://{ip}:8080/detect_plants:frame', headers = headers, json = { "image": im_b64, "objects" : objects } )
+        result = json.loads(response.content)
 
-        return frame
-
-    def detect_objects(self, objects : list = ['plant', 'plants', 'leaf', 'leaves']):
-
-        ct = 0
-        while self.stop == False:
-            frame = self.picam.capture_array()
-            if ct % 3 == 0: # Process every 3rd frame
-
-                frame = self.preprocess_frame(frame)
-                results = self.model(frame)
-                check, class_names = self.process_frame(results[0], objects)
-
-                if check:
-                    self.speak.say('Specified object found')
-                
-                if ct%10 == 0 and len(class_names) > 0:
-                    names = ' '.join(class_names)
-                    self.speak.say(f'All objects found include: {names}')
-            ct += 1
+        return result['response']
+        
+        
 
