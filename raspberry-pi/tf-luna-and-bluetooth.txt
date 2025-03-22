@@ -38,7 +38,7 @@ To check pulseaudio cards:
 # Use pulse audio UI to set bluetooth headphones to Hands free protocol (hfp). (a2dp is for audio only)    
 # To set the hfp card from command line:
 #sudo -u '#1000' XDG_RUNTIME_DIR=/run/user/1000 pactl set-card-profile bluez_card.B4_84_D5_B9_14_23 handsfree_head_unit
-2. sudo -u '#1000' XDG_RUNTIME_DIR=/run/user/1000 pactl set-card-profile bluez_card.B4_84_D5_B9_14_23headset-head-unit-cvsd
+2. sudo -u '#1000' XDG_RUNTIME_DIR=/run/user/1000 pactl set-card-profile bluez_card.B4_84_D5_B9_14_23 headset-head-unit-cvsd
 
 #For TF Luna lidar sensor - Provide user access to ttyS0 every time after reboot
 3. sudo chmod 666 /dev/ttyS0
