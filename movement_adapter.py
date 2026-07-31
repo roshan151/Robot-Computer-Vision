@@ -1,6 +1,11 @@
 """
 Movement API used by voice / planner — drives Arduino via SerialDrivetrain.
 Method names match `prompts_and_glossary.commands['movement'][*]['command']`.
+
+v2 → v3 changes:
+  - straight() and reverse() now call straight_m() / reverse_m() directly.
+    The old duration→ticks approximation is gone; distance is encoder-exact.
+  - meters_per_second parameter removed (no longer needed).
 """
 
 from __future__ import annotations
@@ -27,12 +32,10 @@ class ArduinoMovement:
         self,
         drivetrain: Optional[SerialDrivetrain] = None,
         ctx: Optional[MovementContext] = None,
-        meters_per_second: float = config.APPROX_METERS_PER_SECOND,
     ) -> None:
         self._owns_dt = drivetrain is None
         self._dt = drivetrain or SerialDrivetrain()
         self._ctx = ctx
-        self._mps = meters_per_second
 
     def close(self) -> None:
         if self._owns_dt:
@@ -52,16 +55,18 @@ class ArduinoMovement:
                 self._ctx.set_moving(False)
 
     def straight(self, meters: Any = None) -> None:
+        """Drive forward `meters` metres using encoder-counted movement."""
         m = float(meters) if meters is not None else config.DEFAULT_MOVE_METERS
-        dur = max(0.05, abs(m) / self._mps)
-        logger.info("straight ~%.2f m -> %.2f s", m, dur)
-        self._wrap_moving(self._dt.straight, duration=dur)
+        m = abs(m)
+        logger.info("straight %.3f m (encoder-counted)", m)
+        self._wrap_moving(self._dt.straight_m, meters=m)
 
     def reverse(self, meters: Any = None) -> None:
+        """Drive backward `meters` metres using encoder-counted movement."""
         m = float(meters) if meters is not None else config.DEFAULT_MOVE_METERS
-        dur = max(0.05, abs(m) / self._mps)
-        logger.info("reverse ~%.2f m -> %.2f s", m, dur)
-        self._wrap_moving(self._dt.reverse, duration=dur)
+        m = abs(m)
+        logger.info("reverse %.3f m (encoder-counted)", m)
+        self._wrap_moving(self._dt.reverse_m, meters=m)
 
     def left(self, angle: Any = None) -> None:
         deg = float(angle) if angle is not None else config.DEFAULT_TURN_DEGREES
