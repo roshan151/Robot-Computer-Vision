@@ -372,6 +372,25 @@ class ArduinoBridge:
                     self._on_error()
             return
 
+        if line.startswith("WARN:JUNK,"):
+            logger.warning(
+                "Arduino received corrupted serial input (%s) — "
+                "commands still ran; electrical noise on the serial line",
+                line.split(",", 1)[1],
+            )
+            return
+
+        if line.startswith("WARN:NOISE,"):
+            # The firmware repaired a corrupted encoder reading and kept
+            # driving.  Surface it — repeated warnings mean the encoder
+            # wiring is picking up noise even though the move survived.
+            logger.warning(
+                "Encoder noise repaired mid-move (raw counts %s) — "
+                "move continued; check encoder wire routing if frequent",
+                line.split(",", 1)[1],
+            )
+            return
+
         enc = parse_enc_line(line)
         if enc is not None and self._on_encoder:
             self._on_encoder(enc[0], enc[1])

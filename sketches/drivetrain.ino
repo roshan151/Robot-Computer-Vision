@@ -85,9 +85,9 @@ void resetFlagsInit(void) {
 
 // ---- Serial buffer ----
 #define CMD_BUF_SIZE 64
-char    cmd_buf[CMD_BUF_SIZE];
-uint8_t cmd_pos   = 0;
-bool    cmd_dirty = false;   // line contained a non-printable (noise) byte
+char     cmd_buf[CMD_BUF_SIZE];
+uint8_t  cmd_pos    = 0;
+uint16_t junk_lines = 0;   // unrecognised lines seen (corrupted input)
 
 // ---- Encoder state ----
 // Signed: positive = forward/right-turn, negative = reverse/left-turn.
@@ -142,6 +142,17 @@ long          pending_ticks   = 0;
 
 // ---- Ramp timer ----
 unsigned long last_ramp_ms = 0;
+
+// ---- Noise tolerance ----
+// A corrupted encoder reading is repaired rather than fatal; give up only
+// if it keeps happening within a single move.
+#define MAX_NOISE_CORRECTIONS 5
+int noise_corrections = 0;
+
+// Arduino's abs() is a macro that can truncate to 16 bits depending on
+// which definition wins — hence a reading printed as exactly 65535
+// (0xFFFF).  Use explicit 32-bit arithmetic for encoder counts.
+static inline long labs32(long v) { return v < 0 ? -v : v; }
 
 // --------------------------------------------------
 // Encoder ISRs
@@ -253,13 +264,35 @@ int rampPWM(int current, int target) {
 }
 
 // --------------------------------------------------
-// isReversal — true only for F↔B switches.
-// Turns are not reversals — each wheel is already
-// opposite so no extra dead-time is needed.
+// wheelSigns — which way each wheel turns for a command.
+// --------------------------------------------------
+void wheelSigns(char dir, int &left, int &right) {
+  switch (dir) {
+    case 'F': left =  1; right =  1; break;
+    case 'B': left = -1; right = -1; break;
+    case 'L': left = -1; right =  1; break;
+    case 'R': left =  1; right = -1; break;
+    default:  left =  0; right =  0; break;   // unknown / first move
+  }
+}
+
+// --------------------------------------------------
+// isReversal — true if EITHER wheel has to change its
+// direction of rotation.
+//
+// Checking only F<->B was wrong: going from B to L flips
+// the right wheel from backward to forward, and F to R
+// flips the right wheel too.  Those transitions need the
+// same dead-time as a straight reversal, or the driver
+// pushes current into a wheel that is still turning the
+// other way.
 // --------------------------------------------------
 bool isReversal(char prev, char next) {
-  return (prev == 'F' && next == 'B') ||
-         (prev == 'B' && next == 'F');
+  int pl, pr, nl, nr;
+  wheelSigns(prev, pl, pr);
+  wheelSigns(next, nl, nr);
+  if (pl == 0 || nl == 0) return false;   // no known previous direction
+  return (pl * nl < 0) || (pr * nr < 0);
 }
 
 // --------------------------------------------------
@@ -293,16 +326,12 @@ void beginDrive(char dir, int speed, long ticks) {
 
   // Target PWM signs per motor per direction.  current_pwm is 0
   // (coastMotors above), so loop() soft-starts both motors.
-  int left_sign  = 0;
-  int right_sign = 0;
-  switch (dir) {
-    case 'F': left_sign =  1; right_sign =  1; break;
-    case 'B': left_sign = -1; right_sign = -1; break;
-    case 'L': left_sign = -1; right_sign =  1; break;
-    case 'R': left_sign =  1; right_sign = -1; break;
-  }
+  int left_sign, right_sign;
+  wheelSigns(dir, left_sign, right_sign);
   target_pwm_left  = left_sign  * speed;
   target_pwm_right = right_sign * speed;
+
+  noise_corrections = 0;
 
   last_ramp_ms = millis();
   // ACK is sent by loop() once the encoder target is reached.
@@ -417,10 +446,21 @@ void handleCommand(char* cmd) {
     return;
   }
 
-  // Unrecognised line.  Report it with the offending text so a stray
-  // ERR can be traced back to what actually arrived on the wire.
-  Serial.print("ERR:UNKNOWN,");
-  Serial.println(cmd);
+  // Unrecognised line — corrupted input, since the Pi only ever sends
+  // commands this firmware knows.  Do NOT answer with ERR: that is what
+  // made noise abort healthy moves.  Report it as a rate-limited warning
+  // so a flood of junk can never saturate the transmit buffer and stall
+  // the loop (which starved real commands of their ACK).
+  static unsigned long last_junk_ms = 0;
+  junk_lines++;
+  if (millis() - last_junk_ms >= 1000) {
+    last_junk_ms = millis();
+    Serial.print("WARN:JUNK,");
+    Serial.print(junk_lines);
+    Serial.print(",");
+    cmd[16] = '\0';          // bound the echo — never dump a long line
+    Serial.println(cmd);
+  }
 }
 
 // --------------------------------------------------
@@ -467,27 +507,27 @@ void setup() {
 void loop() {
 
   // ---- Serial command reader ----
-  // Any line containing a non-printable byte is electrical noise, not a
-  // command: drop it silently.  Answering noise with ERR is what aborted
-  // otherwise-healthy moves on the Pi side.
+  // Noise bytes are DROPPED individually rather than poisoning the whole
+  // line.  An earlier version flagged the line as dirty and discarded it,
+  // which threw away the real command that followed a noise byte and left
+  // the Pi waiting for an ACK that never came.  Filtering per byte means
+  // "<noise>S\n" still executes as "S".
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
       if (cmd_pos > 0) {
         cmd_buf[cmd_pos] = '\0';
-        if (!cmd_dirty) handleCommand(cmd_buf);
-        cmd_pos   = 0;
-        cmd_dirty = false;
+        handleCommand(cmd_buf);
+        cmd_pos = 0;
       }
-    } else {
-      if (c < 32 || c > 126) cmd_dirty = true;   // noise byte
+    } else if (c >= 32 && c <= 126) {          // printable — keep
       if (cmd_pos < CMD_BUF_SIZE - 1) {
         cmd_buf[cmd_pos++] = c;
       } else {
-        cmd_pos   = 0;   // buffer overflow — discard and resync
-        cmd_dirty = true;
+        cmd_pos = 0;   // buffer overflow — discard and resync
       }
     }
+    // non-printable bytes fall through and are discarded
   }
 
   // ---- Non-blocking brake dead-time ----
@@ -563,17 +603,19 @@ void loop() {
   // protects against the case where one wheel genuinely stalls.
   //
   // Noise sanity: if the two wheels diverge wildly mid-move, one channel
-  // is almost certainly counting noise.  Stop and report ERR so the Pi
-  // can react instead of letting the move drift to the timeout.
+  // is counting noise.  A burst only ever ADDS counts, so the wheel with
+  // the SMALLER magnitude is the trustworthy one — snap the bad counter
+  // back to it and keep driving.  Aborting the whole move on a single
+  // glitch is what made an otherwise healthy turn fail.  Only give up if
+  // the corruption keeps recurring.
   if (move_active) {
     noInterrupts();
     long el = enc_left;
     long er = enc_right;
     interrupts();
 
-    long abs_el = abs(el);
-    long abs_er = abs(er);
-    long travelled = min(abs_el, abs_er);
+    long abs_el = labs32(el);
+    long abs_er = labs32(er);
 
     // Detect runaway noise: one wheel reports >>10x the other once both
     // have moved enough that the ratio is meaningful (>50 ticks).  This
@@ -589,15 +631,30 @@ void loop() {
       noise_runaway = true;
     }
 
-    if (travelled >= target_ticks) {
+    if (noise_runaway) {
+      noise_corrections++;
+      if (noise_corrections > MAX_NOISE_CORRECTIONS) {
+        stopMotors();
+        Serial.print("ERR:NOISE,");
+        Serial.print(el);
+        Serial.print(",");
+        Serial.println(er);
+      } else {
+        // Trust the smaller reading and re-sync the corrupted channel.
+        long good = min(abs_el, abs_er);
+        noInterrupts();
+        enc_left  = (el < 0) ? -good : good;
+        enc_right = (er < 0) ? -good : good;
+        interrupts();
+        // Tell the Pi it happened without failing the move.
+        Serial.print("WARN:NOISE,");
+        Serial.print(el);
+        Serial.print(",");
+        Serial.println(er);
+      }
+    } else if (labs32(min(abs_el, abs_er)) >= target_ticks) {
       stopMotors();
       Serial.println("ACK");
-    } else if (noise_runaway) {
-      stopMotors();
-      Serial.print("ERR:NOISE,");   // one encoder channel is counting noise
-      Serial.print(el);
-      Serial.print(",");
-      Serial.println(er);
     } else if (millis() - move_start_ms > MOVE_TIMEOUT_MS) {
       stopMotors();
       Serial.println("ERR:TIMEOUT");
