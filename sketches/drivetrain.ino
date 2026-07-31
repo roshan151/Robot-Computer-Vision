@@ -569,11 +569,19 @@ void loop() {
       tl -= correction;
       tr += correction;
 
-      // Clamp — never let PID flip a wheel's direction mid-move.
-      if (target_pwm_left  > 0) tl = max(tl, 0);
-      if (target_pwm_left  < 0) tl = min(tl, 0);
-      if (target_pwm_right > 0) tr = max(tr, 0);
-      if (target_pwm_right < 0) tr = min(tr, 0);
+      // The correction may only SLOW a wheel — never drive it past the
+      // speed the caller asked for.  Previously only the lower bound was
+      // clamped, so the lagging wheel was boosted to catch up: on this
+      // drivetrain the right wheel freewheels ~1.6x faster than the left,
+      // so the left motor was pushed toward full PWM on every encoder-
+      // counted move.  That is current the caller never asked for, drawn
+      // only in encoder mode — which is why the open-loop timed test runs
+      // clean while these moves brown the board out.  Slowing the leading
+      // wheel achieves the same sync and can only ever reduce current.
+      if      (target_pwm_left  > 0) tl = constrain(tl, 0, target_pwm_left);
+      else if (target_pwm_left  < 0) tl = constrain(tl, target_pwm_left, 0);
+      if      (target_pwm_right > 0) tr = constrain(tr, 0, target_pwm_right);
+      else if (target_pwm_right < 0) tr = constrain(tr, target_pwm_right, 0);
     }
 
     int new_l = rampPWM(current_pwm_left,  tl);
