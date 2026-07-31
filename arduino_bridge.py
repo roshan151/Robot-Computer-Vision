@@ -44,6 +44,21 @@ MOVE_ACK_TIMEOUT = 30.0
 # How long to wait for ACK on fast commands (S, V:, F, B, L, R)
 CMD_ACK_TIMEOUT  = 2.0
 
+# After a detected reset the Arduino runs its bootloader and setup() before
+# it can accept anything.  Commands sent during that window are lost, so the
+# bridge holds them until the board is listening again.
+BOOT_SETTLE_S = 2.0
+
+
+class ArduinoResetError(RuntimeError):
+    """The Arduino restarted while a command was in flight.
+
+    Distinct from a generic failure because the recovery differs: the board
+    is fine, it simply lost its state.  Commands with no lasting effect can
+    be re-sent; a move cannot, because the robot has already travelled an
+    unknown part of the distance.
+    """
+
 _READ_BUF_MAX = 256  # bytes; lines longer than this are discarded
 
 
@@ -68,6 +83,13 @@ class ArduinoBridge:
         self._reader_stop  = threading.Event()
         self._closed       = False
         self._reader: Optional[threading.Thread] = None
+
+        # Timestamp of the most recent detected reset, so _send() can hold
+        # off until the board has finished booting.  Guarded by _boot_lock
+        # because the reader thread writes it.
+        self._boot_lock     = threading.Lock()
+        self._last_boot_ts  = 0.0
+        self.reset_count    = 0
 
         logger.info("Opening serial port %s @ %d baud", port, baud)
         try:
@@ -347,6 +369,9 @@ class ArduinoBridge:
         logger.debug("RX: %r  awaiting_ack=%s", line, self._awaiting_ack.is_set())
 
         if is_boot_line(line):
+            with self._boot_lock:
+                self._last_boot_ts = time.monotonic()
+                self.reset_count += 1
             if self._awaiting_ack.is_set():
                 # Arduino reset while we were waiting for a command's ACK.
                 # Push the full BOOT line into the queue so _wait_ack can
@@ -423,26 +448,74 @@ class ArduinoBridge:
             if is_err_line(line):
                 raise RuntimeError(f"Arduino returned ERR — {describe_err(line)}")
             if is_boot_line(line):
-                raise RuntimeError(
+                raise ArduinoResetError(
                     f"Arduino reset mid-command — {describe_boot(line)}"
                 )
         raise TimeoutError(f"No ACK from Arduino within {timeout_s:.1f} s")
 
-    def _send(self, cmd: str, ack_timeout: float = CMD_ACK_TIMEOUT) -> None:
+    def _wait_boot_settled(self) -> None:
+        """Block until a recently-reset Arduino is listening again.
+
+        Without this, the command issued right after a reset is written into
+        a board still running its bootloader and is silently lost — which
+        turns one reset into a cascade of timeouts.
+        """
+        while True:
+            with self._boot_lock:
+                ts = self._last_boot_ts
+            if ts == 0.0:
+                return
+            remaining = (ts + BOOT_SETTLE_S) - time.monotonic()
+            if remaining <= 0:
+                with self._boot_lock:
+                    if self._last_boot_ts == ts:
+                        self._last_boot_ts = 0.0
+                logger.info("Arduino finished rebooting — resuming commands")
+                return
+            time.sleep(min(0.1, remaining))
+
+    def _send(
+        self,
+        cmd: str,
+        ack_timeout: float = CMD_ACK_TIMEOUT,
+        retries: int = 0,
+    ) -> None:
         """
         Send a command and block until ACK (or raise on ERR / timeout).
 
         Holds _lock for the ENTIRE transaction so concurrent callers cannot
         interleave their writes and ACK reads.
 
+        `retries` re-sends after a reset.  Only pass a non-zero value for
+        commands that are safe to repeat: re-sending a move would drive the
+        full distance a second time on top of however far the robot already
+        got before the reset.
+
         Note: _wait_ack blocks on queue.get() which releases the GIL, so
         the reader thread can still call _dispatch_line and push into the
         queue even while this method holds _lock.
         """
+        for attempt in range(retries + 1):
+            try:
+                self._send_once(cmd, ack_timeout)
+                return
+            except ArduinoResetError:
+                if attempt >= retries:
+                    raise
+                logger.warning(
+                    "Arduino reset during %r — retrying (%d/%d)",
+                    cmd, attempt + 1, retries,
+                )
+
+    def _send_once(self, cmd: str, ack_timeout: float) -> None:
         if self._closed:
             raise RuntimeError("ArduinoBridge is closed — call constructor again to reconnect")
 
         payload = (cmd.strip() + "\n").encode("utf-8")
+
+        # If the board is mid-reboot, wait for it rather than shouting into
+        # a bootloader.
+        self._wait_boot_settled()
 
         with self._lock:
             # Drain stale queue entries BEFORE arming the flag so old junk
@@ -469,21 +542,23 @@ class ArduinoBridge:
     # Public API — intent commands (open-loop, Arduino ACKs immediately)
     # ------------------------------------------------------------------ #
 
-    def forward(self)  -> None: self._send("F")
-    def backward(self) -> None: self._send("B")
-    def left(self)     -> None: self._send("L")
-    def right(self)    -> None: self._send("R")
+    # These carry no distance, so re-sending after a reset is harmless —
+    # it just re-states the intent to a board that forgot it.
+    def forward(self)  -> None: self._send("F", retries=1)
+    def backward(self) -> None: self._send("B", retries=1)
+    def left(self)     -> None: self._send("L", retries=1)
+    def right(self)    -> None: self._send("R", retries=1)
 
     def stop(self) -> None:
         """Send stop with a short timeout — safe to call during teardown."""
         try:
-            self._send("S", ack_timeout=0.5)
+            self._send("S", ack_timeout=0.5, retries=1)
         except Exception:
             logger.warning("stop(): no ACK received (already disconnected?)")
 
     def set_speed_pwm(self, value: int) -> None:
         v = max(0, min(255, int(value)))
-        self._send(f"V:{v}")
+        self._send(f"V:{v}", retries=1)
 
     # ------------------------------------------------------------------ #
     # Public API — encoder-counted move (blocks until Arduino ACKs done)
@@ -501,6 +576,11 @@ class ArduinoBridge:
 
         The Arduino's PID loop keeps both wheels in sync during straight
         moves. No time.sleep() is needed on the Pi side.
+
+        Deliberately NOT retried on reset: the robot has already covered an
+        unknown part of the distance, so re-sending would overshoot.  The
+        caller gets ArduinoResetError and decides what to do; the motors are
+        stopped first either way.
         """
         if direction not in ("F", "B", "L", "R"):
             raise ValueError(f"Invalid direction: {direction!r}")
@@ -511,4 +591,11 @@ class ArduinoBridge:
         tkns = max(1, int(ticks))
         cmd  = f"M:{direction},{spd},{tkns}"
         logger.debug("move -> %r (ack_timeout=%.1f s)", cmd, MOVE_ACK_TIMEOUT)
-        self._send(cmd, ack_timeout=MOVE_ACK_TIMEOUT)
+        try:
+            self._send(cmd, ack_timeout=MOVE_ACK_TIMEOUT)
+        except ArduinoResetError:
+            # A rebooted Arduino comes up with its motors coasting, but say
+            # so explicitly once it is listening again — never leave a
+            # half-finished move driving.
+            self.stop()
+            raise
