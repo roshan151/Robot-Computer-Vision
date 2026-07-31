@@ -149,6 +149,11 @@ unsigned long last_ramp_ms = 0;
 #define MAX_NOISE_CORRECTIONS 5
 int noise_corrections = 0;
 
+// Ticks a wheel can physically produce per millisecond, with headroom.
+// Measured peak on this drivetrain is ~0.7 ticks/ms at 50% PWM, so ~1.4
+// at full speed; 3 leaves ample margin while still rejecting garbage.
+#define MAX_TICKS_PER_MS 3L
+
 // Arduino's abs() is a macro that can truncate to 16 bits depending on
 // which definition wins — hence a reading printed as exactly 65535
 // (0xFFFF).  Use explicit 32-bit arithmetic for encoder counts.
@@ -610,12 +615,18 @@ void loop() {
   // longer end a move prematurely.  The MOVE_TIMEOUT_MS safety net still
   // protects against the case where one wheel genuinely stalls.
   //
-  // Noise sanity: if the two wheels diverge wildly mid-move, one channel
-  // is counting noise.  A burst only ever ADDS counts, so the wheel with
-  // the SMALLER magnitude is the trustworthy one — snap the bad counter
-  // back to it and keep driving.  Aborting the whole move on a single
-  // glitch is what made an otherwise healthy turn fail.  Only give up if
-  // the corruption keeps recurring.
+  // Noise sanity: judge each reading against how far the wheel COULD have
+  // turned in the time elapsed, rather than against the other wheel.
+  //
+  // The previous ratio test compared abs_el against 10 * abs_er.  Once a
+  // count grew past ~215 million that multiply overflowed a signed 32-bit
+  // long and went negative, so the comparison was always true and the
+  // guard fired forever — even with both wheels reading identically.  And
+  // the repair used min() of the two channels, which is a no-op when BOTH
+  // are corrupt.  Together they turned one glitch into a guaranteed abort.
+  //
+  // A time-based ceiling cannot overflow, needs no comparison between the
+  // wheels, and rejects any impossible value whatever its origin.
   if (move_active) {
     noInterrupts();
     long el = enc_left;
@@ -625,21 +636,15 @@ void loop() {
     long abs_el = labs32(el);
     long abs_er = labs32(er);
 
-    // Detect runaway noise: one wheel reports >>10x the other once both
-    // have moved enough that the ratio is meaningful (>50 ticks).  This
-    // catches the "left encoder spewing 10^9 counts" failure mode early.
-    bool noise_runaway = false;
-    if (abs_el > 50 && abs_er > 50) {
-      if (abs_el > 10 * abs_er || abs_er > 10 * abs_el) {
-        noise_runaway = true;
-      }
-    } else if (abs_el > 10000 && abs_er < 10) {
-      noise_runaway = true;
-    } else if (abs_er > 10000 && abs_el < 10) {
-      noise_runaway = true;
-    }
+    // Most ticks the wheel could physically have produced by now, with
+    // generous headroom (measured peak is well under 1.5 ticks/ms).
+    unsigned long move_ms = millis() - move_start_ms;
+    long ceiling = (long)(move_ms + 100UL) * MAX_TICKS_PER_MS;
 
-    if (noise_runaway) {
+    bool el_bad = abs_el > ceiling;
+    bool er_bad = abs_er > ceiling;
+
+    if (el_bad || er_bad) {
       noise_corrections++;
       if (noise_corrections > MAX_NOISE_CORRECTIONS) {
         stopMotors();
@@ -648,17 +653,25 @@ void loop() {
         Serial.print(",");
         Serial.println(er);
       } else {
-        // Trust the smaller reading and re-sync the corrupted channel.
-        long good = min(abs_el, abs_er);
+        // Replace an impossible reading with the other wheel if that one
+        // is still credible, otherwise with the ceiling.  Sign comes from
+        // enc_dir, since a corrupted counter's own sign is meaningless.
+        long fixed_l = el_bad ? (er_bad ? ceiling : abs_er) : abs_el;
+        long fixed_r = er_bad ? (el_bad ? ceiling : abs_el) : abs_er;
         noInterrupts();
-        enc_left  = (el < 0) ? -good : good;
-        enc_right = (er < 0) ? -good : good;
+        enc_left  = (enc_dir < 0) ? -fixed_l : fixed_l;
+        enc_right = (enc_dir < 0) ? -fixed_r : fixed_r;
         interrupts();
-        // Tell the Pi it happened without failing the move.
-        Serial.print("WARN:NOISE,");
-        Serial.print(el);
-        Serial.print(",");
-        Serial.println(er);
+
+        // Rate-limited: a burst must not flood the transmit buffer.
+        static unsigned long last_warn_ms = 0;
+        if (millis() - last_warn_ms >= 500) {
+          last_warn_ms = millis();
+          Serial.print("WARN:NOISE,");
+          Serial.print(el);
+          Serial.print(",");
+          Serial.println(er);
+        }
       }
     } else if (labs32(min(abs_el, abs_er)) >= target_ticks) {
       stopMotors();

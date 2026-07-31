@@ -115,6 +115,14 @@ class ArduinoBridge:
             self.close()
             raise
 
+        # Opening the port pulses DTR, so the handshake always sees a BOOT.
+        # That is expected, not a fault: clear the settle timer and the
+        # counter, or the first real command would sit out a pointless
+        # BOOT_SETTLE_S wait on a board the handshake just proved is ready.
+        with self._boot_lock:
+            self._last_boot_ts = 0.0
+            self.reset_count   = 0
+
     # ------------------------------------------------------------------ #
     # Public properties
     # ------------------------------------------------------------------ #
