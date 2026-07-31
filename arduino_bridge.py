@@ -27,7 +27,14 @@ from typing import Callable, Optional
 import serial
 
 import config
-from serial_protocol import ACK, ERR, describe_boot, is_boot_line, parse_enc_line
+from serial_protocol import (
+    ACK,
+    describe_boot,
+    describe_err,
+    is_boot_line,
+    is_err_line,
+    parse_enc_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -355,11 +362,14 @@ class ArduinoBridge:
                     self._on_error()
             return
 
-        if line in (ACK, ERR):
+        if line == ACK or is_err_line(line):
             if self._awaiting_ack.is_set():
                 self._cmd_q.put(line)
-            elif line == ERR and self._on_error:
-                self._on_error()
+            elif is_err_line(line):
+                logger.error("Arduino reported ERR (unsolicited) — %s",
+                             describe_err(line))
+                if self._on_error:
+                    self._on_error()
             return
 
         enc = parse_enc_line(line)
@@ -391,8 +401,8 @@ class ArduinoBridge:
                 continue
             if line == ACK:
                 return
-            if line == ERR:
-                raise RuntimeError("Arduino returned ERR")
+            if is_err_line(line):
+                raise RuntimeError(f"Arduino returned ERR — {describe_err(line)}")
             if is_boot_line(line):
                 raise RuntimeError(
                     f"Arduino reset mid-command — {describe_boot(line)}"

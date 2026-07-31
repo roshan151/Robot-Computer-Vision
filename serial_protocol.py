@@ -22,9 +22,40 @@ _RESET_CAUSE_BITS = (
 )
 
 
+# Firmware ERR reasons, reported as "ERR:<reason>[,detail]".
+_ERR_REASONS = {
+    "PARSE":   "the Arduino could not parse the command it received "
+               "(the line arrived corrupted)",
+    "BADDIR":  "invalid direction in a move command",
+    "UNKNOWN": "the Arduino received a line it does not recognise — if this "
+               "is not a command you sent, it is electrical noise on the "
+               "serial line",
+    "NOISE":   "one encoder channel reported impossible counts "
+               "(electrical pickup on the encoder wiring)",
+    "TIMEOUT": "the move ran past the firmware's 15 s limit without both "
+               "encoders reaching the target (stalled wheel, disconnected "
+               "encoder, or TICKS_PER_CM set too high)",
+}
+
+
 def is_boot_line(line: str) -> bool:
     """True for both the legacy bare "BOOT" and the new "BOOT:<hex>" form."""
     return line == BOOT or line.startswith(BOOT + ":")
+
+
+def is_err_line(line: str) -> bool:
+    """True for both the legacy bare "ERR" and the new "ERR:<reason>" form."""
+    return line == ERR or line.startswith(ERR + ":")
+
+
+def describe_err(line: str) -> str:
+    """Human-readable explanation of an ERR line."""
+    if ":" not in line:
+        return "no reason given (firmware without reason reporting)"
+    body = line.split(":", 1)[1]
+    reason, _, detail = body.partition(",")
+    text = _ERR_REASONS.get(reason, f"unrecognised reason {reason!r}")
+    return f"{text} [{detail}]" if detail else text
 
 
 def describe_boot(line: str) -> str:

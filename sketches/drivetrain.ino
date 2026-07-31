@@ -86,7 +86,8 @@ void resetFlagsInit(void) {
 // ---- Serial buffer ----
 #define CMD_BUF_SIZE 64
 char    cmd_buf[CMD_BUF_SIZE];
-uint8_t cmd_pos = 0;
+uint8_t cmd_pos   = 0;
+bool    cmd_dirty = false;   // line contained a non-printable (noise) byte
 
 // ---- Encoder state ----
 // Signed: positive = forward/right-turn, negative = reverse/left-turn.
@@ -122,6 +123,18 @@ long          target_ticks    = 0;
 bool          move_active     = false;
 char          current_dir     = '\0';
 unsigned long move_start_ms   = 0;       // millis() when current move began
+
+// ---- Pending move (armed while the brake dead-time runs) ----
+// The dead-time must NOT be a delay(): blocking the loop leaves the serial
+// port unread, and any byte that arrives meanwhile — including a noise
+// glitch — sits in the UART buffer and is parsed as a command as soon as
+// the delay ends.  Instead we brake, remember what to do, and let loop()
+// start the move once the deadline passes.
+bool          brake_pending   = false;
+unsigned long brake_until_ms  = 0;
+char          pending_dir     = '\0';
+int           pending_speed   = 0;
+long          pending_ticks   = 0;
 
 // Safety timeout — abort move and send ERR if it takes longer than this.
 // Prevents motors running forever if both encoders fail simultaneously.
@@ -250,39 +263,18 @@ bool isReversal(char prev, char next) {
 }
 
 // --------------------------------------------------
-// startMove — begin an encoder-counted move.
+// beginDrive — actually start driving.
 //
-// Sequence:
-//  1. Validate direction (ERR before touching state).
-//  2. Active-brake dead-time so the wheels are truly
-//     stopped before current flows the other way:
-//       F↔B reversal → BRAKE_MS_REVERSE (400 ms)
-//       anything else → BRAKE_MS_SAME   (150 ms)
-//  3. Set enc_dir, reset encoder counts.
-//  4. Set target PWM per motor; loop() ramps up from 0
-//     (soft start — no instantaneous current step).
-//  5. Arm move_active — loop() sends ACK on completion.
+// Called either directly by startMove() (when no brake
+// dead-time is needed) or by loop() once the dead-time
+// deadline has passed.
 // --------------------------------------------------
-void startMove(char dir, int speed, long ticks) {
-  // 1. Validate.
-  if (dir != 'F' && dir != 'B' && dir != 'L' && dir != 'R') {
-    Serial.println("ERR");
-    return;
-  }
-
-  // 2. Brake to a full stop, hold, then release.
-  // A reversal always gets the hold, even if PWM already reads zero —
-  // the wheels may still be spinning down from the previous move.
-  bool driving = move_active || current_pwm_left != 0 || current_pwm_right != 0;
-  if (driving || isReversal(current_dir, dir)) {
-    brakeMotors();
-    delay(isReversal(current_dir, dir) ? BRAKE_MS_REVERSE : BRAKE_MS_SAME);
-  }
-  coastMotors();  // release brake — loop() ramps PWM up from here
+void beginDrive(char dir, int speed, long ticks) {
+  coastMotors();  // release the brake — loop() ramps PWM up from zero
 
   current_dir = dir;
 
-  // 3. Set encoder direction, then atomically reset counts.
+  // Set encoder direction, then atomically reset counts.
   // Also reset ISR debounce timestamps so the first real edge of the new
   // move is not rejected because it happens to fall within MIN_PULSE_US
   // of a stale timestamp from the previous move.
@@ -299,7 +291,7 @@ void startMove(char dir, int speed, long ticks) {
   move_active   = true;
   move_start_ms = millis();
 
-  // 4. Target PWM signs per motor per direction.  current_pwm is 0
+  // Target PWM signs per motor per direction.  current_pwm is 0
   // (coastMotors above), so loop() soft-starts both motors.
   int left_sign  = 0;
   int right_sign = 0;
@@ -313,7 +305,41 @@ void startMove(char dir, int speed, long ticks) {
   target_pwm_right = right_sign * speed;
 
   last_ramp_ms = millis();
-  // 5. move_active is true — ACK sent by loop() on completion.
+  // ACK is sent by loop() once the encoder target is reached.
+}
+
+// --------------------------------------------------
+// startMove — begin an encoder-counted move.
+//
+// If the wheels may still be turning, engage the active
+// brake and arm a NON-BLOCKING dead-time; loop() calls
+// beginDrive() when it expires.  Blocking here with
+// delay() would leave the serial port unread for the
+// whole dead-time.
+// --------------------------------------------------
+void startMove(char dir, int speed, long ticks) {
+  if (dir != 'F' && dir != 'B' && dir != 'L' && dir != 'R') {
+    Serial.println("ERR:BADDIR");
+    return;
+  }
+
+  // A reversal always gets the hold, even if PWM already reads zero —
+  // the wheels may still be spinning down from the previous move.
+  bool driving = move_active || current_pwm_left != 0 || current_pwm_right != 0;
+  bool reversing = isReversal(current_dir, dir);
+
+  if (driving || reversing) {
+    brakeMotors();
+    brake_until_ms = millis() + (reversing ? BRAKE_MS_REVERSE : BRAKE_MS_SAME);
+    pending_dir    = dir;
+    pending_speed  = speed;
+    pending_ticks  = ticks;
+    brake_pending  = true;
+    move_active    = false;   // encoder counting starts in beginDrive()
+    return;
+  }
+
+  beginDrive(dir, speed, ticks);
 }
 
 // --------------------------------------------------
@@ -322,8 +348,9 @@ void startMove(char dir, int speed, long ticks) {
 void handleCommand(char* cmd) {
   if (cmd[0] == '\0') return;
 
-  // STOP — immediate active brake.
+  // STOP — immediate active brake, and drop any armed move.
   if (strcmp(cmd, "S") == 0) {
+    brake_pending = false;
     stopMotors();
     Serial.println("ACK");
     return;
@@ -367,7 +394,7 @@ void handleCommand(char* cmd) {
     long ticks;
     int parsed = sscanf(cmd, "M:%c,%d,%ld", &dir, &speed, &ticks);
     if (parsed != 3 || speed <= 0 || ticks <= 0) {
-      Serial.println("ERR");
+      Serial.println("ERR:PARSE");
       return;
     }
     startMove(dir, speed, ticks);
@@ -385,12 +412,15 @@ void handleCommand(char* cmd) {
       if (target_pwm_right < 0) target_pwm_right = -v;
       Serial.println("ACK");
     } else {
-      Serial.println("ERR");
+      Serial.println("ERR:PARSE");
     }
     return;
   }
 
-  Serial.println("ERR");
+  // Unrecognised line.  Report it with the offending text so a stray
+  // ERR can be traced back to what actually arrived on the wire.
+  Serial.print("ERR:UNKNOWN,");
+  Serial.println(cmd);
 }
 
 // --------------------------------------------------
@@ -437,21 +467,36 @@ void setup() {
 void loop() {
 
   // ---- Serial command reader ----
+  // Any line containing a non-printable byte is electrical noise, not a
+  // command: drop it silently.  Answering noise with ERR is what aborted
+  // otherwise-healthy moves on the Pi side.
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
       if (cmd_pos > 0) {
         cmd_buf[cmd_pos] = '\0';
-        handleCommand(cmd_buf);
-        cmd_pos = 0;
+        if (!cmd_dirty) handleCommand(cmd_buf);
+        cmd_pos   = 0;
+        cmd_dirty = false;
       }
     } else {
+      if (c < 32 || c > 126) cmd_dirty = true;   // noise byte
       if (cmd_pos < CMD_BUF_SIZE - 1) {
         cmd_buf[cmd_pos++] = c;
       } else {
-        cmd_pos = 0;  // buffer overflow — discard and resync
+        cmd_pos   = 0;   // buffer overflow — discard and resync
+        cmd_dirty = true;
       }
     }
+  }
+
+  // ---- Non-blocking brake dead-time ----
+  // Start the armed move once the wheels have had time to stop.  Doing
+  // this here rather than with delay() in startMove() keeps the serial
+  // port serviced throughout.
+  if (brake_pending && (long)(millis() - brake_until_ms) >= 0) {
+    brake_pending = false;
+    beginDrive(pending_dir, pending_speed, pending_ticks);
   }
 
   // ---- Timed PWM ramp + sync PID ----
@@ -549,10 +594,13 @@ void loop() {
       Serial.println("ACK");
     } else if (noise_runaway) {
       stopMotors();
-      Serial.println("ERR");   // noisy encoder line — Pi should abort
+      Serial.print("ERR:NOISE,");   // one encoder channel is counting noise
+      Serial.print(el);
+      Serial.print(",");
+      Serial.println(er);
     } else if (millis() - move_start_ms > MOVE_TIMEOUT_MS) {
       stopMotors();
-      Serial.println("ERR");   // Pi sees ERR and aborts cleanly
+      Serial.println("ERR:TIMEOUT");
     }
   }
 
