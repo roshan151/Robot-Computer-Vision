@@ -86,38 +86,32 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_sequence(name: str, move_distance_m: float) -> List[Step]:
+def build_sequence(name: str, move_distance_m: float, turn_angle_deg: float) -> List[Step]:
     """
     Build a named movement sequence.
 
-    For straight/reverse steps the value is metres.
-    For left/right steps the value is 0 (caller substitutes --turn-angle).
+    Each step carries the value it actually uses: metres for
+    forward/reverse, degrees for left/right, unused for stop.
     """
     if name == "square":
         return [
             ("forward", move_distance_m),
-            ("right",   0.0),
-            ("forward", move_distance_m),
-            ("right",   0.0),
-            ("forward", move_distance_m),
-            ("right",   0.0),
-            ("forward", move_distance_m),
-            ("right",   0.0),
-        ]
+            ("right",   turn_angle_deg),
+        ] * 4
     if name == "spin":
         return [
-            ("left",  0.0),
-            ("right", 0.0),
-            ("left",  0.0),
-            ("right", 0.0),
+            ("left",  turn_angle_deg),
+            ("right", turn_angle_deg),
+            ("left",  turn_angle_deg),
+            ("right", turn_angle_deg),
             ("stop",  0.0),
         ]
     # basic
     return [
         ("forward", move_distance_m),
         ("reverse", move_distance_m),
-        ("left",    0.0),
-        ("right",   0.0),
+        ("left",    turn_angle_deg),
+        ("right",   turn_angle_deg),
         ("stop",    0.0),
     ]
 
@@ -144,23 +138,22 @@ def execute_sequence(
     drivetrain: "SerialDrivetrain",
     sequence: List[Step],
     speed: float,
-    turn_angle: float,
     pause_s: float,
     repeat: int,
 ) -> None:
     actions: Dict[str, Callable] = {
-        "forward": lambda dist, spd: drivetrain.straight_m(meters=dist, speed=spd),
-        "reverse": lambda dist, spd: drivetrain.reverse_m(meters=dist, speed=spd),
-        "left":    lambda _dist, spd: drivetrain.left(angle=turn_angle, speed=spd),
-        "right":   lambda _dist, spd: drivetrain.right(angle=turn_angle, speed=spd),
-        "stop":    lambda _dist, _spd: drivetrain.stop(),
+        "forward": lambda dist,  spd: drivetrain.straight_m(meters=dist, speed=spd),
+        "reverse": lambda dist,  spd: drivetrain.reverse_m(meters=dist, speed=spd),
+        "left":    lambda angle, spd: drivetrain.left(angle=angle, speed=spd),
+        "right":   lambda angle, spd: drivetrain.right(angle=angle, speed=spd),
+        "stop":    lambda _unused, _spd: drivetrain.stop(),
     }
 
     def label(step_name: str, value: float) -> str:
         if step_name in ("forward", "reverse"):
             return f"{value:.3f} m"
         if step_name in ("left", "right"):
-            return f"{turn_angle:.1f}°"
+            return f"{value:.1f}°"
         return "—"
 
     for cycle in range(1, repeat + 1):
@@ -219,7 +212,7 @@ def main() -> None:
         print(f"\nERROR: Could not connect to drivetrain: {exc}")
         raise SystemExit(2)
 
-    sequence = build_sequence(args.sequence, args.move_distance)
+    sequence = build_sequence(args.sequence, args.move_distance, args.turn_angle)
 
     print("Connected. Encoder-counted moves active (no timer fallback).")
     print(
@@ -236,7 +229,6 @@ def main() -> None:
             drivetrain=drivetrain,
             sequence=sequence,
             speed=args.speed,
-            turn_angle=args.turn_angle,
             pause_s=max(0.0, args.pause),
             repeat=repeat,
         )
