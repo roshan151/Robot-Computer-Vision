@@ -6,8 +6,25 @@ import os
 SERIAL_PORT = os.environ.get("ROBOT_SERIAL_PORT", "/dev/ttyUSB0")
 BAUD_RATE = int(os.environ.get("ROBOT_SERIAL_BAUD", "115200"))
 
-# Heartbeat: must be faster than Arduino WATCHDOG_MS (firmware uses 500 ms)
-PING_INTERVAL_S = 0.25
+# Heartbeat: must be comfortably faster than the firmware's link watchdog
+# (LINK_TIMEOUT_MS = 1000 ms in drivetrain.ino).  At 0.25 s the firmware
+# would need to miss four consecutive heartbeats before braking.
+PING_INTERVAL_S = float(os.environ.get("ROBOT_PING_INTERVAL_S", "0.25"))
+
+# ---------------------------------------------------------------------------
+# Framed-protocol settings (firmware v3)
+# ---------------------------------------------------------------------------
+# How long to wait for a command's A/N reply before retransmitting it.
+ACK_TIMEOUT_S = float(os.environ.get("ROBOT_ACK_TIMEOUT_S", "0.35"))
+
+# Retransmissions per command (same sequence number — the firmware
+# deduplicates, so retries never double-execute).
+CMD_RETRIES = int(os.environ.get("ROBOT_CMD_RETRIES", "3"))
+
+# Host-side ceiling on one encoder-counted move.  Must exceed the
+# firmware's own MOVE_TIMEOUT_MS (15 s) so the firmware's D report,
+# not a host timeout, is the normal failure path.
+MOVE_TIMEOUT_S = float(os.environ.get("ROBOT_MOVE_TIMEOUT_S", "20.0"))
 
 # Optional read timeout for non-blocking serial reads (seconds)
 SERIAL_TIMEOUT = 0.05

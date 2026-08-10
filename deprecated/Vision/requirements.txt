@@ -1,3 +1,0 @@
-ultralytics==8.3.47
-fastapi
-uvicorn
