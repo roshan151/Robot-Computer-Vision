@@ -38,6 +38,7 @@ import wave
 from typing import Dict, Optional, Tuple
 
 import config
+import robot_log
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,14 @@ class AudioCues:
         for exe in ("paplay", "aplay"):
             if shutil.which(exe):
                 return exe
-        logger.warning("no audio backend for cues — running silent")
+        # Structured, not just a log line: with no screen and no voice, "the
+        # robot is mute" has to be greppable in logs.json rather than buried
+        # in console output nobody is watching.
+        robot_log.event(
+            "audio.error", logging.WARNING, stage="cue-backend",
+            err="no playback backend (no sounddevice/numpy, no aplay, no paplay)",
+            fix="pip install sounddevice numpy, or apt install alsa-utils",
+        )
         return "none"
 
     # ------------------------------------------------------------------ #

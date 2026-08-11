@@ -70,7 +70,11 @@ def _init() -> str:
             return _backend
 
     _backend = "none"
-    logger.warning("no TTS backend — spoken output will only reach logs.json")
+    robot_log.event(
+        "audio.error", logging.WARNING, stage="tts-backend",
+        err="no TTS backend (Nix TTS not configured, espeak-ng not installed)",
+        fix="sudo apt install espeak-ng",
+    )
     return _backend
 
 
