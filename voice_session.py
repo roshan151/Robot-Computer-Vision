@@ -1,14 +1,17 @@
 """
-Voice → GPT → movement + vision, with Arduino drivetrain backend.
-Optional: Picamera2 / OpenCV, Nix TTS, Google STT.
+Voice → movement, with an Arduino drivetrain backend.
+
+Audio goes to Gemini in a single request that returns the movement plan
+directly. Voice activity detection and endpointing stay on-device; only the
+understanding is remote.
+
+Optional: Picamera2 / OpenCV (no camera on this build), Nix TTS.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -16,8 +19,13 @@ from typing import Any, Dict, List, Optional
 import config
 import robot_log
 from audio_cues import cues
+from gemini_client import GeminiError, GeminiVoicePlanner, to_legacy_steps
+from gestures import SyncGesturer
 
-from prompts_and_glossary import commands as glossary_commands, movement_prompt
+from prompts_and_glossary import (
+    audio_movement_prompt,
+    commands as glossary_commands,
+)
 
 from movement_adapter import ArduinoMovement, MovementHistory
 from vision_client import RobotVision
@@ -27,20 +35,6 @@ logger = logging.getLogger(__name__)
 VISION_STEP_KEYS = {"capture", "record", "detect", "scan", "terminate"}
 ORIGIN_KEYS = set(glossary_commands.get("origin", [])) | {"origin"}
 TERMINATE_WORDS = {t.lower() for t in glossary_commands.get("terminate", [])} | {"terminate"}
-JSON_SUFFIX = """
-
-Respond with ONLY valid JSON (no markdown fences). Schema:
-{"steps":[{"forward":2},{"left":90}]}
-
-Rules:
-- Each element of "steps" is one object with exactly one key.
-- Movement keys: forward, reverse, left, right, stop, origin.
-  - forward/reverse: numeric meters.
-  - left/right: numeric degrees.
-  - stop and origin: use null as value (JSON null).
-- Vision keys: capture, record, detect, scan, terminate — use null except detect/scan take an array of object names, e.g. ["plant","plants"].
-- For scan, value is the same array style as detect.
-"""
 
 
 class _NoSpeech(Exception):
@@ -52,46 +46,27 @@ class _NoSpeech(Exception):
     """
 
 
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    m = re.match(r"^```(?:json)?\s*([\s\S]*?)```$", text, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    return text
-
-
-def parse_gpt_steps(content: str) -> List[Dict[str, Any]]:
-    raw = _strip_code_fence(content)
-    data = json.loads(raw)
-    steps = data.get("steps")
-    if not isinstance(steps, list):
-        raise ValueError("JSON must contain a 'steps' array")
-    out: List[Dict[str, Any]] = []
-    for item in steps:
-        if not isinstance(item, dict) or not item:
-            raise ValueError("each step must be a non-empty object")
-        if len(item) > 1:
-            logger.warning("multi-key step from model, using first key only: %s", item)
-        k = next(iter(item))
-        out.append({k: item[k]})
-    return out
-
-
 class VoiceRobotSession:
     def __init__(
         self,
         move: ArduinoMovement,
         history: MovementHistory,
         vision: Optional[RobotVision],
-        openai_model: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> None:
         self.move = move
         self.history = history
         self.vision = vision
-        # config loads .env once at import and is the single source of truth
-        # for both the model name and the credential.
-        self.openai_model = openai_model or config.OPENAI_MODEL
-        self.openai_api_key = config.OPENAI_API_KEY
+        # Gemini is the only backend: it takes the microphone audio and the
+        # planning prompt in a single request. config validates the toggle at
+        # import, so reaching here means it is "gemini".
+        self._planner = GeminiVoicePlanner(
+            model=model or config.GEMINI_MODEL,
+            system_prompt=audio_movement_prompt,
+        )
+        # The robot's only way to answer a question. Deliberately NOT routed
+        # through MovementHistory — see SyncGesturer.
+        self._gestures = SyncGesturer(move)
         self._nix = None
         self._sd = None
         self._sr = None
@@ -156,21 +131,9 @@ class VoiceRobotSession:
                 robot_log.event("audio.error", logging.WARNING,
                                 stage="tts", err=f"{type(e).__name__}: {e}")
 
-    def query_gpt(self, messages: list) -> str:
-        # require() names the variable and the three places it can live, which
-        # is a better first line in logs.json than a vendor 401 three frames in.
-        api_key = self.openai_api_key or config.require("OPENAI_API_KEY")
-        import openai
-
-        client = openai.OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model=self.openai_model,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=800,
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content.strip()
+    def plan(self, wav_bytes: bytes) -> Dict[str, Any]:
+        """Audio in, plan out — one request, no separate transcription step."""
+        return self._planner.plan(wav_bytes)
 
     def calibrate(self) -> None:
         """Measure the ambient noise floor once, at startup.
@@ -194,8 +157,13 @@ class VoiceRobotSession:
             robot_log.event("audio.error", logging.WARNING,
                             stage="calibrate", err=f"{type(e).__name__}: {e}")
 
-    def listen_once(self) -> str:
-        """Wait for one spoken command. Blocks silently until speech arrives.
+    def listen_once(self) -> bytes:
+        """Wait for one spoken command; return it as WAV bytes.
+
+        Note what stays local: `Recognizer.listen()` is doing voice activity
+        detection and endpointing, deciding when the utterance began and ended.
+        Only the *transcription* moved to Gemini — endpointing on-device is
+        what keeps a silent room from uploading anything at all.
 
         Two ordering rules matter here:
 
@@ -224,12 +192,11 @@ class VoiceRobotSession:
             except self._sr.WaitTimeoutError as e:
                 raise _NoSpeech("no speech within listen window") from e
 
-        try:
-            text = str(self._recognizer.recognize_google(audio)).lower()
-        except self._sr.UnknownValueError as e:
-            raise RuntimeError("could not understand audio") from e
-        robot_log.event("voice.heard", text=text)
-        return text
+        # 16 kHz mono PCM WAV — exactly what Gemini wants, and it downsamples
+        # to 16 kbps mono anyway, so sending more is wasted Pi WiFi upload.
+        return audio.get_wav_data(
+            convert_rate=config.GEMINI_AUDIO_RATE, convert_width=2
+        )
 
     def _dispatch_step(self, step: Dict[str, Any]) -> bool:
         """
@@ -296,12 +263,10 @@ class VoiceRobotSession:
         return self.vision._picam is None and self.vision._cv2 is None  # type: ignore[attr-defined]
 
     def run(self) -> None:
-        system = movement_prompt + JSON_SUFFIX
-        messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
         listening = True
         while listening:
             try:
-                speech = self.listen_once()
+                wav = self.listen_once()
             except _NoSpeech:
                 # Nobody spoke. This is the normal idle state, not a fault:
                 # re-arm the microphone with no cue, no print, no prompt. The
@@ -312,29 +277,61 @@ class VoiceRobotSession:
                     waiting_s=config.LISTEN_TIMEOUT_S,
                 )
                 continue
-            except RuntimeError as e:
-                # Heard something, could not transcribe it. Same answer the
-                # robot gives for "no": one gesture, no speech.
-                robot_log.event("voice.unclear", logging.WARNING, err=str(e))
-                self._cues.unclear()
-                continue
             except Exception as e:
                 robot_log.event("audio.error", logging.ERROR,
                                 stage="listen", err=f"{type(e).__name__}: {e}")
                 self._cues.unclear()
                 continue
 
-            messages.append({"role": "user", "content": speech})
+            # One request: audio + prompt + schema -> plan. No separate
+            # transcription hop, so nothing can be lost between two models.
+            t0 = time.monotonic()
             try:
-                raw = self.query_gpt(messages)
-                steps = parse_gpt_steps(raw)
+                result = self.plan(wav)
+            except GeminiError as e:
+                robot_log.event("voice.unclear", logging.WARNING,
+                                stage="plan", err=str(e),
+                                audio_kb=round(len(wav) / 1024, 1))
+                self._cues.unclear()
+                continue
             except Exception as e:
-                logger.exception("GPT parse failed: %s", e)
-                self.speak("I could not plan that command.")
-                messages.append({"role": "assistant", "content": json.dumps({"error": str(e)})})
+                robot_log.event("audio.error", logging.ERROR,
+                                stage="plan", err=f"{type(e).__name__}: {e}")
+                self._cues.unclear()
                 continue
 
-            messages.append({"role": "assistant", "content": raw})
+            heard = result.get("heard", "")
+            answer = result.get("answer", "none")
+            steps = to_legacy_steps(result.get("steps", []))
+
+            # `heard` is the model's own transcript. On a robot with no screen
+            # this is the difference between "it ignored me" and "it heard
+            # something else" — the single most useful line in logs.json.
+            robot_log.event(
+                "voice.heard", text=heard, answer=answer, steps=len(steps),
+                rtt_s=round(time.monotonic() - t0, 2),
+                audio_kb=round(len(wav) / 1024, 1),
+            )
+
+            if answer == "unclear":
+                # The model heard audio but could not make a command of it. It
+                # deliberately returns no steps rather than guessing: a wrong
+                # move on a floor with obstacles beats no move.
+                #
+                # "no" and "didn't understand you" share the head-shake by
+                # design — one bit of output, and the distinction is not worth
+                # a second gesture the operator would have to learn.
+                self._cues.unclear()
+                self._gestures.play("unclear")
+                continue
+
+            if answer in ("yes", "no"):
+                # The robot's entire reply. Blocking on this thread is correct:
+                # the planner never returns an answer and steps together, so a
+                # gesture can never overlap a movement, and there is nothing
+                # else for the loop to do while it plays.
+                self._gestures.play(answer)
+                continue
 
             for step in steps:
                 try:
@@ -342,8 +339,8 @@ class VoiceRobotSession:
                         listening = False
                         break
                 except Exception as e:
-                    logger.exception("step failed: %s", e)
-                    self.speak(f"Failed on step {step}: {e}")
+                    robot_log.event("move.failed", logging.ERROR,
+                                    step=step, err=f"{type(e).__name__}: {e}")
 
             time.sleep(0.3)
 

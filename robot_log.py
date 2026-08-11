@@ -73,6 +73,9 @@ EVENTS = {
     # conversation
     "gesture",            # YES / NO / UNCLEAR played
     "gesture.skip",       # suppressed, with the reason
+    # power
+    "battery",           # percent / volts at startup
+    "battery.say",       # spoken battery report
     # hardware
     "link.up",
     "link.down",
@@ -84,8 +87,7 @@ EVENTS = {
     "voice.unclear",     # audio arrived but could not be transcribed
     "voice.idle",        # listen window elapsed with no speech - NOT a fault
     "voice.say",         # what the robot would have said, had it a voice
-    # voice (phases 2+)
-    "voice.connect",
+    "voice.connect",     # planner backend selected
     "voice.drop",
     "voice.tool",
     "audio.error",

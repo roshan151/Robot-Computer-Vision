@@ -115,10 +115,31 @@ DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
 # waiting. Tones only — never speech. See audio_cues.py for why ordering
 # (cue first, THEN open the microphone) is what keeps it out of the input.
 AUDIO_CUES_ENABLED = os.environ.get("ROBOT_AUDIO_CUES", "1") not in ("0", "false", "no")
-# Spoken output. Off by design — the robot answers with gestures, and its own
-# voice in the microphone is the failure mode the whole design avoids. Turning
-# this on also restores console printing of what it would have said.
+# Spoken output during conversation. Off by design — the robot answers with
+# gestures, and its own voice in the microphone is the failure mode the whole
+# design avoids. This does NOT gate the startup battery report or failure
+# audio: those play when no capture stream is open, so they are always safe.
 ROBOT_SPEECH_ENABLED = os.environ.get("ROBOT_SPEECH", "0") in ("1", "true", "yes")
+SPEECH_WPM = int(os.environ.get("ROBOT_SPEECH_WPM", "150"))
+SPEECH_AMPLITUDE = int(os.environ.get("ROBOT_SPEECH_AMPLITUDE", "120"))
+
+# ---------------------------------------------------------------------------
+# Battery (PiSugar)
+# ---------------------------------------------------------------------------
+# Spoken once at startup, before the microphone opens. On a headless robot a
+# flat battery is otherwise invisible until the Pi browns out mid-drive — which
+# on this board also resets the Arduino.
+BATTERY_ANNOUNCE = os.environ.get("ROBOT_BATTERY_ANNOUNCE", "1") not in ("0", "false", "no")
+BATTERY_LOW_PCT = float(os.environ.get("ROBOT_BATTERY_LOW_PCT", "20"))
+PISUGAR_SOCKETS = tuple(
+    s.strip() for s in os.environ.get(
+        "PISUGAR_SOCKETS", "/tmp/pisugar-server.sock,/tmp/pisugar.sock"
+    ).split(",") if s.strip()
+)
+PISUGAR_TCP = (
+    os.environ.get("PISUGAR_HOST", "127.0.0.1"),
+    int(os.environ.get("PISUGAR_PORT", "8423")),
+)
 AUDIO_CUE_DEVICE = os.environ.get("ROBOT_AUDIO_CUE_DEVICE", "")
 AUDIO_CUE_GAIN = float(os.environ.get("ROBOT_AUDIO_CUE_GAIN", "0.25"))
 # Settle time after a cue before capture opens, covering the room's reverb
@@ -209,16 +230,9 @@ def _first_env(*names: str) -> str:
     return ""
 
 
-# OpenAI — _ROBIN suffix kept as the preferred alias for this robot's key.
-OPENAI_API_KEY = _first_env("OPENAI_API_KEY_ROBIN", "OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-
-# Google Gemini — the Live API backend (Phase 2).
+# Google Gemini — the only voice backend.
 GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
 GEMINI_LIVE_MODEL = os.environ.get("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-preview")
-
-# Which backend the voice session should use.
-VOICE_BACKEND = os.environ.get("ROBOT_VOICE_BACKEND", "gemini").lower()
 
 # Nix TTS — used only on the failure path (pre-rendered clips), never in
 # normal operation. Paths, not secrets, but same principle: no hardcoded
@@ -231,9 +245,41 @@ BT_MAC = os.environ.get("BT_MAC", "")
 
 # Every name here is treated as sensitive by the log redactor.
 SECRET_NAMES = (
-    "OPENAI_API_KEY",
     "GEMINI_API_KEY",
 )
+
+# ---------------------------------------------------------------------------
+# Voice backend
+# ---------------------------------------------------------------------------
+# Gemini only, deliberately. It takes the microphone audio and the planning
+# prompt in ONE request and returns structured JSON, replacing the old
+# two-hop  mic -> Google Web Speech -> text -> OpenAI  pipeline.
+#
+# The toggle exists so the value is named and validated rather than implied,
+# and so a future backend has an obvious place to land. Anything other than
+# "gemini" is rejected at import — a silently ignored setting is worse than
+# no setting.
+VOICE_BACKENDS = ("gemini",)
+VOICE_BACKEND = os.environ.get("ROBOT_VOICE_BACKEND", "gemini").strip().lower()
+if VOICE_BACKEND not in VOICE_BACKENDS:
+    raise ValueError(
+        f"ROBOT_VOICE_BACKEND={VOICE_BACKEND!r} is not supported. "
+        f"Supported: {', '.join(VOICE_BACKENDS)}."
+    )
+
+# gemini-3.6-flash is the current Flash generation; audio in, JSON out.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "0.2"))
+# Prior turns kept as text. Audio is never resent — the transcript carries what
+# the planner needs at a fraction of the tokens.
+GEMINI_HISTORY_TURNS = int(os.environ.get("GEMINI_HISTORY_TURNS", "6"))
+# Inline audio ceiling. The API limit is 20 MB for the whole request; this is a
+# much tighter sanity bound, since a 12 s command at 16 kHz mono is ~384 kB and
+# anything far larger means the recorder is misconfigured.
+GEMINI_MAX_AUDIO_KB = int(os.environ.get("GEMINI_MAX_AUDIO_KB", "4096"))
+# Gemini downsamples to 16 kbps mono regardless, so sending more is wasted
+# upload on the Pi's WiFi.
+GEMINI_AUDIO_RATE = int(os.environ.get("GEMINI_AUDIO_RATE", "16000"))
 
 
 class MissingSecret(RuntimeError):

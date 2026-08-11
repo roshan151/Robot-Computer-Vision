@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import socket
+import os
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent
@@ -47,23 +47,11 @@ def _emergency_brake(cause: str) -> None:
                         reason=f"process dying: {cause}",
                         err=f"{type(e).__name__}: {e}")
 
-sockets = [
-    "/tmp/pisugar-server.sock",
-    "/tmp/pisugar.sock"
-]
-def pisugar_command(command):
+def pisugar_command(command: str) -> str:
+    """Kept for compatibility — see battery.py for the maintained interface."""
+    import battery
 
-
-    for path in sockets:
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.connect(path)
-                s.sendall((command + "\n").encode())
-                return s.recv(1024).decode().strip()
-        except (FileNotFoundError, ConnectionRefusedError):
-            pass
-
-    raise RuntimeError("PiSugar Power Manager not running")
+    return battery._query(command)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Voice + vision + Arduino stack")
@@ -82,18 +70,32 @@ def main() -> None:
         "--log", default=None,
         help="Path to the JSON Lines event log (default: config.LOG_PATH).",
     )
+    parser.add_argument(
+        "--no-battery-announce", action="store_true",
+        help="Skip the spoken battery report at startup.",
+    )
     args = parser.parse_args()
+
+    import config
 
     log_path = robot_log.setup(args.log)
     robot_log.install_crash_handlers(on_fatal=_emergency_brake)
     robot_log.event(
         "session.start",
         mode="voice-only" if (args.voice_only or args.no_guardian) else "full",
-        pid=__import__("os").getpid(),
-        port=__import__("config").SERIAL_PORT,
-        speed_pct=__import__("config").DEFAULT_SPEED_PERCENT,
+        pid=os.getpid(),
+        port=config.SERIAL_PORT,
+        speed_pct=config.DEFAULT_SPEED_PERCENT,
         log=str(log_path),
     )
+
+    # Battery first, and deliberately before anything opens the microphone:
+    # this is the one moment speech is unambiguously safe, because no capture
+    # stream exists yet. It also gives the operator an audible "I booted".
+    if not args.no_battery_announce:
+        import battery
+
+        battery.announce()
 
     from voice_session import run_voice_session
 
