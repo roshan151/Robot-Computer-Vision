@@ -159,6 +159,52 @@ LISTEN_PHRASE_LIMIT_S = float(os.environ.get("ROBOT_LISTEN_PHRASE_S", "12"))
 # would add this much dead air to every single command.
 LISTEN_CALIBRATE_S = float(os.environ.get("ROBOT_LISTEN_CALIBRATE_S", "1.0"))
 
+# Floor under the recognizer's energy threshold.
+#
+# dynamic_energy_threshold keeps adapting to the room, which is what stops one
+# startup calibration going stale — but in a QUIET room it adapts downward
+# without limit until the microphone triggers on the Pi's own fan. Every such
+# trigger became an upload, and enough of them became a 429.
+#
+# Re-applied before every listen, so the drift can never go below it. Raise it
+# if the robot still wakes on nothing; lower it if quiet speech is missed.
+LISTEN_MIN_ENERGY = float(os.environ.get("ROBOT_LISTEN_MIN_ENERGY", "300"))
+
+# ---------------------------------------------------------------------------
+# Local speech gate — what stops noise becoming API requests
+# ---------------------------------------------------------------------------
+# Recognizer.listen() detects ENERGY, not speech. This second, cheap, local
+# check runs on the captured clip and drops anything that cannot plausibly be a
+# spoken command, before it costs a request. See audio_gate.py.
+#
+# Tune against real recordings:  python audio_gate.py clip1.wav clip2.wav
+GATE_ENABLED = os.environ.get("ROBOT_GATE", "1") not in ("0", "false", "no")
+# A spoken command is at least a few hundred ms. A click is ~50 ms.
+GATE_MIN_DURATION_S = float(os.environ.get("ROBOT_GATE_MIN_DUR_S", "0.35"))
+# Loudest 20 ms frame, 0-1. Below this it is room tone.
+GATE_MIN_PEAK = float(os.environ.get("ROBOT_GATE_MIN_PEAK", "0.012"))
+# Seconds of frames near the peak. Rejects transients: one loud frame
+# surrounded by silence is a bump, not a word.
+GATE_MIN_VOICED_S = float(os.environ.get("ROBOT_GATE_MIN_VOICED_S", "0.20"))
+# Peak-to-median frame energy. Speech varies at syllable rate; a fan or motor
+# is loud, sustained and FLAT — the one case an energy threshold cannot reject.
+GATE_MIN_MODULATION = float(os.environ.get("ROBOT_GATE_MIN_MODULATION", "2.5"))
+
+# ---------------------------------------------------------------------------
+# Request budget
+# ---------------------------------------------------------------------------
+# Hard client-side ceiling, independent of what triggers the microphone. The
+# gate should prevent runaway uploads; this guarantees it, so a pathological
+# room cannot burn the quota no matter what.
+# Gemini's free tier is commonly 15 RPM — check your own limit and set this
+# slightly below it.
+GEMINI_MAX_RPM = int(os.environ.get("GEMINI_MAX_RPM", "12"))
+# Minimum gap between two requests, so a burst cannot fire back to back.
+GEMINI_MIN_INTERVAL_S = float(os.environ.get("GEMINI_MIN_INTERVAL_S", "1.0"))
+# How long to stop calling after a 429, doubling each consecutive one.
+GEMINI_COOLDOWN_S = float(os.environ.get("GEMINI_COOLDOWN_S", "20"))
+GEMINI_COOLDOWN_MAX_S = float(os.environ.get("GEMINI_COOLDOWN_MAX_S", "300"))
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------

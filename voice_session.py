@@ -19,7 +19,13 @@ from typing import Any, Dict, List, Optional
 import config
 import robot_log
 from audio_cues import cues
-from gemini_client import GeminiError, GeminiVoicePlanner, to_legacy_steps
+import audio_gate
+from gemini_client import (
+    GeminiError,
+    GeminiRateLimited,
+    GeminiVoicePlanner,
+    to_legacy_steps,
+)
 from gestures import SyncGesturer
 
 from prompts_and_glossary import (
@@ -73,6 +79,7 @@ class VoiceRobotSession:
         self._recognizer = None
         self._mic = None
         self._calibrated = False
+        self._noise_dropped = 0
         self._cues = cues()
         self._init_audio()
 
@@ -180,6 +187,14 @@ class VoiceRobotSession:
             raise RuntimeError("microphone / speech_recognition not available")
 
         self.calibrate()
+
+        # dynamic_energy_threshold keeps adapting downward in a quiet room,
+        # with no lower bound, until the microphone wakes on nothing. Clamp it
+        # back up before every listen — one line, and it removes most of the
+        # spurious triggers at source rather than filtering them later.
+        if self._recognizer.energy_threshold < config.LISTEN_MIN_ENERGY:
+            self._recognizer.energy_threshold = config.LISTEN_MIN_ENERGY
+
         self._cues.ready()          # outside the `with` block, deliberately
 
         with self._mic as source:
@@ -283,11 +298,38 @@ class VoiceRobotSession:
                 self._cues.unclear()
                 continue
 
+            # Local gate FIRST. Recognizer.listen() fires on energy, not
+            # speech, so clicks, bumps and fan noise all reach here. Uploading
+            # them is what exhausts the quota — and none of them could ever
+            # have produced a command.
+            gate = audio_gate.check(wav)
+            if not gate.accepted:
+                self._noise_dropped += 1
+                robot_log.event_throttled(
+                    "voice.noise", key="gate", window_s=60.0,
+                    reason=gate.reason, dropped_total=self._noise_dropped,
+                    **gate.as_dict(),
+                )
+                continue
+
             # One request: audio + prompt + schema -> plan. No separate
             # transcription hop, so nothing can be lost between two models.
             t0 = time.monotonic()
             try:
                 result = self.plan(wav)
+            except GeminiRateLimited as e:
+                # Do NOT retry and do NOT loop straight back into listening —
+                # that is what turns one 429 into a hundred. Sit out the
+                # cooldown with the microphone closed.
+                wait = max(1.0, min(e.retry_after or config.GEMINI_COOLDOWN_S,
+                                    config.GEMINI_COOLDOWN_MAX_S))
+                robot_log.event("voice.throttled", logging.WARNING,
+                                err=str(e), sleeping_s=round(wait, 1),
+                                budget=self._planner.budget.status(),
+                                noise_dropped=self._noise_dropped)
+                self._cues.error()
+                time.sleep(wait)
+                continue
             except GeminiError as e:
                 robot_log.event("voice.unclear", logging.WARNING,
                                 stage="plan", err=str(e),

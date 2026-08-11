@@ -33,6 +33,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
@@ -101,6 +104,110 @@ class GeminiError(RuntimeError):
     """The planner could not produce a usable result."""
 
 
+class GeminiRateLimited(GeminiError):
+    """Quota exhausted (HTTP 429), or the local budget refused the request.
+
+    Separate from GeminiError because the right response is different: a
+    malformed reply means shake the head and listen again, but hammering a
+    rate-limited endpoint just deepens the hole.
+    """
+
+    def __init__(self, message: str, retry_after: float = 0.0) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _looks_rate_limited(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return ("429" in text or "resource_exhausted" in text
+            or "rate limit" in text or "quota" in text)
+
+
+def _retry_after_from(exc: Exception) -> float:
+    """Pull a server-suggested delay out of the error if it offers one."""
+    m = re.search(r"retry[- _]?after[\"'\s:]+(\d+(?:\.\d+)?)", str(exc), re.I)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"retryDelay[\"'\s:]+(\d+(?:\.\d+)?)s", str(exc))
+    return float(m.group(1)) if m else 0.0
+
+
+class RequestBudget:
+    """Token bucket + minimum spacing + post-429 cooldown.
+
+    The speech gate is what should keep request volume sane. This is the
+    backstop that makes it impossible to exceed the quota even if the gate is
+    misconfigured or the room does something unexpected — a robot that quietly
+    burns its daily quota overnight is a worse failure than one that declines
+    a command.
+    """
+
+    def __init__(self, max_rpm: Optional[int] = None,
+                 min_interval_s: Optional[float] = None) -> None:
+        self.max_rpm = config.GEMINI_MAX_RPM if max_rpm is None else max_rpm
+        self.min_interval_s = (config.GEMINI_MIN_INTERVAL_S
+                               if min_interval_s is None else min_interval_s)
+        self._lock = threading.Lock()
+        self._times: List[float] = []
+        self._cooldown_until = 0.0
+        self._cooldown_s = config.GEMINI_COOLDOWN_S
+        self.rejected = 0
+
+    def check(self) -> None:
+        """Raise GeminiRateLimited if this request must not be sent."""
+        now = time.monotonic()
+        with self._lock:
+            if now < self._cooldown_until:
+                self.rejected += 1
+                raise GeminiRateLimited(
+                    f"in cooldown for another {self._cooldown_until - now:.0f}s "
+                    f"after a 429",
+                    retry_after=self._cooldown_until - now,
+                )
+
+            self._times = [t for t in self._times if now - t < 60.0]
+            if len(self._times) >= self.max_rpm:
+                wait = 60.0 - (now - self._times[0])
+                self.rejected += 1
+                raise GeminiRateLimited(
+                    f"local budget: {self.max_rpm} requests/min reached",
+                    retry_after=wait,
+                )
+            if self._times and now - self._times[-1] < self.min_interval_s:
+                wait = self.min_interval_s - (now - self._times[-1])
+                self.rejected += 1
+                raise GeminiRateLimited(
+                    f"local budget: minimum {self.min_interval_s}s between "
+                    f"requests", retry_after=wait,
+                )
+            self._times.append(now)
+
+    def penalise(self, retry_after: float = 0.0) -> float:
+        """Record a server 429 and start (or extend) the cooldown."""
+        with self._lock:
+            wait = max(retry_after, self._cooldown_s)
+            self._cooldown_until = time.monotonic() + wait
+            self._cooldown_s = min(self._cooldown_s * 2,
+                                   config.GEMINI_COOLDOWN_MAX_S)
+            return wait
+
+    def succeeded(self) -> None:
+        """A good response resets the escalating cooldown."""
+        with self._lock:
+            self._cooldown_s = config.GEMINI_COOLDOWN_S
+
+    def status(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            recent = len([t for t in self._times if now - t < 60.0])
+            return {
+                "rpm_used": recent,
+                "rpm_max": self.max_rpm,
+                "rejected": self.rejected,
+                "cooldown_s": max(0.0, round(self._cooldown_until - now, 1)),
+            }
+
+
 def to_legacy_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Typed steps -> the single-key dicts `_dispatch_step` already understands.
 
@@ -142,6 +249,7 @@ class GeminiVoicePlanner:
         self._api_key = api_key
         self._client = None
         self._surface: Optional[str] = None
+        self.budget = RequestBudget()
         # Rolling text context. Prior audio is deliberately NOT resent: the
         # transcript carries everything the planner needs and costs a fraction
         # of the tokens.
@@ -191,15 +299,18 @@ class GeminiVoicePlanner:
         16 kbps and mixes to mono anyway, so sending more is wasted upload on
         a Pi's WiFi.
         """
-        client = self._connect()
-        prompt = self._prompt_text()
         size_kb = len(wav_bytes) / 1024
-
         if size_kb > config.GEMINI_MAX_AUDIO_KB:
             raise GeminiError(
                 f"audio is {size_kb:.0f} kB, over the "
                 f"{config.GEMINI_MAX_AUDIO_KB} kB inline limit"
             )
+
+        # Checked before connecting, so a refused request costs nothing.
+        self.budget.check()
+
+        client = self._connect()
+        prompt = self._prompt_text()
 
         try:
             if self._surface == "interactions":
@@ -209,8 +320,14 @@ class GeminiVoicePlanner:
         except GeminiError:
             raise
         except Exception as e:
+            if _looks_rate_limited(e):
+                wait = self.budget.penalise(_retry_after_from(e))
+                raise GeminiRateLimited(
+                    f"server refused: {type(e).__name__}: {e}", retry_after=wait
+                ) from e
             raise GeminiError(f"{type(e).__name__}: {e}") from e
 
+        self.budget.succeeded()
         result = self._parse(raw)
         heard = result.get("heard", "")
         if heard:

@@ -25,6 +25,7 @@ from gemini_client import (  # noqa: E402
     RESPONSE_SCHEMA,
     GeminiError,
     GeminiVoicePlanner,
+    RequestBudget,
     to_legacy_steps,
 )
 
@@ -50,6 +51,9 @@ def _planner(payload, prompt="SYSTEM PROMPT"):
     p = GeminiVoicePlanner(api_key="fake-key", system_prompt=prompt)
     p._client = types.SimpleNamespace(interactions=FakeInteractions(payload, record))
     p._surface = "interactions"
+    # These tests are about request SHAPE, not pacing — the budget has its own
+    # suite in test_noise_and_budget.py.
+    p.budget = RequestBudget(max_rpm=10_000, min_interval_s=0)
     return p, record
 
 
