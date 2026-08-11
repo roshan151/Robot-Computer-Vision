@@ -123,6 +123,25 @@ def _looks_rate_limited(exc: Exception) -> bool:
             or "rate limit" in text or "quota" in text)
 
 
+def _is_transient(exc: Exception) -> bool:
+    """Would the identical request plausibly succeed a second later?
+
+    Server-side 500/503/504 and timeouts are the model's problem, not the
+    audio's — retrying with the SAME clip is correct and invisible to the
+    operator. Everything else (bad schema, auth, malformed reply) would fail
+    again identically, so retrying it just wastes quota and time.
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+    if _looks_rate_limited(exc):
+        return False                      # handled by the cooldown, not retries
+    return any(marker in text for marker in (
+        "500", "502", "503", "504",
+        "internalservererror", "internal error",
+        "unavailable", "deadline", "timeout", "timed out",
+        "connectionreset", "connectionerror", "remotedisconnected",
+    ))
+
+
 def _retry_after_from(exc: Exception) -> float:
     """Pull a server-suggested delay out of the error if it offers one."""
     m = re.search(r"retry[- _]?after[\"'\s:]+(\d+(?:\.\d+)?)", str(exc), re.I)
@@ -312,20 +331,41 @@ class GeminiVoicePlanner:
         client = self._connect()
         prompt = self._prompt_text()
 
-        try:
-            if self._surface == "interactions":
-                raw = self._call_interactions(client, prompt, wav_bytes, mime_type)
-            else:
-                raw = self._call_generate_content(client, prompt, wav_bytes, mime_type)
-        except GeminiError:
-            raise
-        except Exception as e:
-            if _looks_rate_limited(e):
-                wait = self.budget.penalise(_retry_after_from(e))
-                raise GeminiRateLimited(
-                    f"server refused: {type(e).__name__}: {e}", retry_after=wait
-                ) from e
-            raise GeminiError(f"{type(e).__name__}: {e}") from e
+        # Retry transient server failures with the SAME audio. A 500 is the
+        # model's problem, not the operator's — making them repeat the command
+        # by hand was costing roughly one command in four.
+        raw = None
+        last: Optional[Exception] = None
+        for attempt in range(config.GEMINI_RETRIES + 1):
+            try:
+                if self._surface == "interactions":
+                    raw = self._call_interactions(client, prompt, wav_bytes, mime_type)
+                else:
+                    raw = self._call_generate_content(
+                        client, prompt, wav_bytes, mime_type)
+                break
+            except GeminiError:
+                raise
+            except Exception as e:
+                last = e
+                if _looks_rate_limited(e):
+                    wait = self.budget.penalise(_retry_after_from(e))
+                    raise GeminiRateLimited(
+                        f"server refused: {type(e).__name__}: {e}", retry_after=wait
+                    ) from e
+                if _is_transient(e) and attempt < config.GEMINI_RETRIES:
+                    delay = config.GEMINI_RETRY_BACKOFF_S * (2 ** attempt)
+                    robot_log.event(
+                        "voice.retry", logging.WARNING, attempt=attempt + 1,
+                        of=config.GEMINI_RETRIES, backoff_s=round(delay, 2),
+                        err=f"{type(e).__name__}: {str(e)[:120]}",
+                    )
+                    time.sleep(delay)
+                    continue
+                raise GeminiError(f"{type(e).__name__}: {e}") from e
+
+        if raw is None:
+            raise GeminiError(f"exhausted retries: {type(last).__name__}: {last}")
 
         self.budget.succeeded()
         result = self._parse(raw)
@@ -340,7 +380,7 @@ class GeminiVoicePlanner:
     def _call_interactions(self, client, prompt: str, audio: bytes, mime: str) -> str:
         import base64
 
-        interaction = client.interactions.create(
+        kwargs: Dict[str, Any] = dict(
             model=self.model,
             input=[
                 {"type": "text", "text": prompt},
@@ -352,24 +392,54 @@ class GeminiVoicePlanner:
             ],
             response_format=RESPONSE_SCHEMA,
         )
+        if config.GEMINI_THINKING_LEVEL:
+            kwargs["thinking_level"] = config.GEMINI_THINKING_LEVEL
+
+        try:
+            interaction = client.interactions.create(**kwargs)
+        except TypeError:
+            # Older SDK without thinking_level — drop it rather than fail the
+            # command. Latency will be worse; the log says why.
+            kwargs.pop("thinking_level", None)
+            robot_log.event_throttled(
+                "voice.retry", key="no-thinking-level", window_s=3600,
+                level=logging.WARNING,
+                err="SDK does not accept thinking_level; latency will be higher",
+                fix="pip install -U google-genai",
+            )
+            interaction = client.interactions.create(**kwargs)
         return interaction.output_text
 
     def _call_generate_content(self, client, prompt: str, audio: bytes, mime: str) -> str:
         from google.genai import types  # type: ignore
 
-        response = client.models.generate_content(
-            model=self.model,
-            contents=[
-                types.Part.from_text(text=prompt),
-                types.Part.from_bytes(data=audio, mime_type=mime),
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=RESPONSE_SCHEMA,
-                temperature=config.GEMINI_TEMPERATURE,
-            ),
+        cfg: Dict[str, Any] = dict(
+            response_mime_type="application/json",
+            response_schema=RESPONSE_SCHEMA,
+            temperature=config.GEMINI_TEMPERATURE,
+            max_output_tokens=config.GEMINI_MAX_OUTPUT_TOKENS,
         )
-        return response.text
+        # Same knob, different name depending on SDK vintage. Try the current
+        # one, fall back to the older budget form, then to neither.
+        for thinking in (
+            {"thinking_config": types.ThinkingConfig(
+                thinking_level=config.GEMINI_THINKING_LEVEL)},
+            {"thinking_config": types.ThinkingConfig(thinking_budget=0)},
+            {},
+        ):
+            try:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        types.Part.from_text(text=prompt),
+                        types.Part.from_bytes(data=audio, mime_type=mime),
+                    ],
+                    config=types.GenerateContentConfig(**cfg, **thinking),
+                )
+                return response.text
+            except (TypeError, AttributeError, ValueError):
+                continue
+        raise GeminiError("could not build a valid generate_content config")
 
     @staticmethod
     def _parse(raw: str) -> Dict[str, Any]:

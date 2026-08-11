@@ -89,6 +89,7 @@ EVENTS = {
     "voice.say",         # what the robot would have said, had it a voice
     "voice.noise",       # clip rejected locally, never uploaded
     "voice.throttled",   # 429 or local budget refused the request
+    "voice.retry",       # transient server error, retrying the same audio
     "voice.connect",     # planner backend selected
     "voice.drop",
     "voice.tool",

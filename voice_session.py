@@ -157,9 +157,24 @@ class VoiceRobotSession:
                     source, duration=config.LISTEN_CALIBRATE_S
                 )
             self._recognizer.dynamic_energy_threshold = True
+            # Set BEFORE the optional tuning below: if that throws, we must not
+            # fall through to re-calibrating on every single turn, which would
+            # silently add a second of dead air per command.
             self._calibrated = True
+
+            # Silence that ends an utterance. The operator waits through this
+            # on every command before the request is even sent, so it is felt
+            # as latency exactly like the API call is. It also trims trailing
+            # silence off the upload.
+            self._recognizer.pause_threshold = config.LISTEN_PAUSE_S
+            self._recognizer.non_speaking_duration = min(
+                getattr(self._recognizer, "non_speaking_duration",
+                        config.LISTEN_PAUSE_S),
+                config.LISTEN_PAUSE_S,
+            )
             robot_log.event("voice.calibrate",
-                            threshold=round(self._recognizer.energy_threshold, 1))
+                            threshold=round(self._recognizer.energy_threshold, 1),
+                            pause_s=config.LISTEN_PAUSE_S)
         except Exception as e:
             robot_log.event("audio.error", logging.WARNING,
                             stage="calibrate", err=f"{type(e).__name__}: {e}")

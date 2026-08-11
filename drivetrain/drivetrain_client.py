@@ -74,6 +74,16 @@ class SerialDrivetrain:
             on_error=on_err,
         )
 
+        # Push the calibrated straight-line trim on every connect. The firmware
+        # default survives a reflash; this survives an environment change, and
+        # a board reset mid-session re-applies it on reconnect.
+        if config.SYNC_TRIM_PPT:
+            try:
+                self._bridge.set_sync_trim(config.SYNC_TRIM_PPT)
+                logger.info("sync trim set to %+d ppt", config.SYNC_TRIM_PPT)
+            except Exception as e:
+                logger.warning("could not set sync trim: %s", e)
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -164,6 +174,13 @@ class SerialDrivetrain:
     def intent_backward(self) -> None: self._bridge.backward()
     def intent_left(self)     -> None: self._bridge.left()
     def intent_right(self)    -> None: self._bridge.right()
+
+    def set_sync_trim(self, ppt: int) -> None:
+        """Straight-line trim in parts per thousand; positive corrects veer-right.
+
+        Calibrate with: python tests/calibrate_straight.py
+        """
+        self._bridge.set_sync_trim(ppt)
 
     def set_base_speed_percent(self, pct: float) -> None:
         """Set the V: speed register on the Arduino (for open-loop intent commands)."""

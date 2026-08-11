@@ -77,6 +77,19 @@ ENCODER_SYNC_WARN_RATIO: float = float(os.environ.get("ROBOT_SYNC_WARN_RATIO", "
 # received is a mid-move sample and the reported travel is short.
 ENCODER_SETTLE_S: float = float(os.environ.get("ROBOT_ENCODER_SETTLE_S", "0.15"))
 
+# Straight-line trim, parts per thousand. Applied to the firmware at connect.
+#
+# The firmware sync loop equalises encoder TICKS. Equal ticks is not equal
+# DISTANCE when the wheels differ in effective rolling radius, so the robot can
+# curve while both encoders report a perfect match — and a P-only loop leaves
+# steady-state error besides. This feedforward bias cancels both.
+#
+#   POSITIVE slows the LEFT wheel  -> corrects veering RIGHT
+#   NEGATIVE slows the RIGHT wheel -> corrects veering LEFT
+#
+# How to find your value:  python tests/calibrate_straight.py
+SYNC_TRIM_PPT: int = int(os.environ.get("ROBOT_SYNC_TRIM_PPT", "0"))
+
 # ---------------------------------------------------------------------------
 # Connection / handshake settings
 # ---------------------------------------------------------------------------
@@ -154,7 +167,14 @@ AUDIO_CUE_GUARD_S = float(os.environ.get("ROBOT_AUDIO_CUE_GUARD_S", "0.15"))
 # changes what the operator hears.
 LISTEN_TIMEOUT_S = float(os.environ.get("ROBOT_LISTEN_TIMEOUT_S", "300"))
 # Maximum length of a single spoken command, once speech has begun.
-LISTEN_PHRASE_LIMIT_S = float(os.environ.get("ROBOT_LISTEN_PHRASE_S", "12"))
+LISTEN_PHRASE_LIMIT_S = float(os.environ.get("ROBOT_LISTEN_PHRASE_S", "8"))
+
+# Silence that ends an utterance. This is dead time the operator waits through
+# on EVERY command, before the request is even sent — it is felt as latency
+# just as much as the API call is. It also trims trailing silence off the
+# upload. SpeechRecognition's default is 0.8 s.
+# Too low and it cuts you off mid-sentence between words.
+LISTEN_PAUSE_S = float(os.environ.get("ROBOT_LISTEN_PAUSE_S", "0.5"))
 # One-off ambient noise calibration at startup (seconds). Per-turn calibration
 # would add this much dead air to every single command.
 LISTEN_CALIBRATE_S = float(os.environ.get("ROBOT_LISTEN_CALIBRATE_S", "1.0"))
@@ -316,6 +336,26 @@ if VOICE_BACKEND not in VOICE_BACKENDS:
 # gemini-3.6-flash is the current Flash generation; audio in, JSON out.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "0.2"))
+
+# THE LATENCY KNOB. Gemini 3.x models reason internally before answering, and
+# on by default that costs many seconds — measured 5-19 s round trips for
+# "go forward", with no correlation to audio length because the time was spent
+# thinking, not transcribing.
+#
+# "minimal" is the level built for latency-sensitive work. Turning a spoken
+# movement command into two JSON fields needs no deliberation.
+# Levels: minimal | low | medium | high
+GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "minimal")
+
+# The reply is a transcript plus a couple of steps. Capping this stops a
+# confused model from spending seconds generating tokens nobody reads.
+GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "512"))
+
+# Transient server failures (500/503/504) are retried automatically with the
+# SAME audio. Without this the operator has to repeat the command by hand —
+# which in one 6-minute session was 3 of 13 commands.
+GEMINI_RETRIES = int(os.environ.get("GEMINI_RETRIES", "2"))
+GEMINI_RETRY_BACKOFF_S = float(os.environ.get("GEMINI_RETRY_BACKOFF_S", "0.6"))
 # Prior turns kept as text. Audio is never resent — the transcript carries what
 # the planner needs at a fraction of the tokens.
 GEMINI_HISTORY_TURNS = int(os.environ.get("GEMINI_HISTORY_TURNS", "6"))
