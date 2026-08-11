@@ -77,19 +77,6 @@ ENCODER_SYNC_WARN_RATIO: float = float(os.environ.get("ROBOT_SYNC_WARN_RATIO", "
 # received is a mid-move sample and the reported travel is short.
 ENCODER_SETTLE_S: float = float(os.environ.get("ROBOT_ENCODER_SETTLE_S", "0.15"))
 
-# Straight-line trim, parts per thousand. Applied to the firmware at connect.
-#
-# The firmware sync loop equalises encoder TICKS. Equal ticks is not equal
-# DISTANCE when the wheels differ in effective rolling radius, so the robot can
-# curve while both encoders report a perfect match — and a P-only loop leaves
-# steady-state error besides. This feedforward bias cancels both.
-#
-#   POSITIVE slows the LEFT wheel  -> corrects veering RIGHT
-#   NEGATIVE slows the RIGHT wheel -> corrects veering LEFT
-#
-# How to find your value:  python tests/calibrate_straight.py
-SYNC_TRIM_PPT: int = int(os.environ.get("ROBOT_SYNC_TRIM_PPT", "0"))
-
 # ---------------------------------------------------------------------------
 # Connection / handshake settings
 # ---------------------------------------------------------------------------
@@ -165,65 +152,52 @@ AUDIO_CUE_GUARD_S = float(os.environ.get("ROBOT_AUDIO_CUE_GUARD_S", "0.15"))
 # distinguished from an idle one — an infinite block would hang forever with
 # nothing in the log. Raise it to make the robot more patient; it never
 # changes what the operator hears.
-LISTEN_TIMEOUT_S = float(os.environ.get("ROBOT_LISTEN_TIMEOUT_S", "300"))
-# Maximum length of a single spoken command, once speech has begun.
-LISTEN_PHRASE_LIMIT_S = float(os.environ.get("ROBOT_LISTEN_PHRASE_S", "8"))
 
-# Silence that ends an utterance. This is dead time the operator waits through
-# on EVERY command, before the request is even sent — it is felt as latency
-# just as much as the API call is. It also trims trailing silence off the
-# upload. SpeechRecognition's default is 0.8 s.
-# Too low and it cuts you off mid-sentence between words.
-LISTEN_PAUSE_S = float(os.environ.get("ROBOT_LISTEN_PAUSE_S", "0.5"))
-# One-off ambient noise calibration at startup (seconds). Per-turn calibration
-# would add this much dead air to every single command.
-LISTEN_CALIBRATE_S = float(os.environ.get("ROBOT_LISTEN_CALIBRATE_S", "1.0"))
 
-# Floor under the recognizer's energy threshold.
-#
-# dynamic_energy_threshold keeps adapting to the room, which is what stops one
-# startup calibration going stale — but in a QUIET room it adapts downward
-# without limit until the microphone triggers on the Pi's own fan. Every such
-# trigger became an upload, and enough of them became a 429.
-#
-# Re-applied before every listen, so the drift can never go below it. Raise it
-# if the robot still wakes on nothing; lower it if quiet speech is missed.
-LISTEN_MIN_ENERGY = float(os.environ.get("ROBOT_LISTEN_MIN_ENERGY", "300"))
 
 # ---------------------------------------------------------------------------
-# Local speech gate — what stops noise becoming API requests
+# Live agent
 # ---------------------------------------------------------------------------
-# Recognizer.listen() detects ENERGY, not speech. This second, cheap, local
-# check runs on the captured clip and drops anything that cannot plausibly be a
-# spoken command, before it costs a request. See audio_gate.py.
-#
-# Tune against real recordings:  python audio_gate.py clip1.wav clip2.wav
-GATE_ENABLED = os.environ.get("ROBOT_GATE", "1") not in ("0", "false", "no")
-# A spoken command is at least a few hundred ms. A click is ~50 ms.
-GATE_MIN_DURATION_S = float(os.environ.get("ROBOT_GATE_MIN_DUR_S", "0.35"))
-# Loudest 20 ms frame, 0-1. Below this it is room tone.
-GATE_MIN_PEAK = float(os.environ.get("ROBOT_GATE_MIN_PEAK", "0.012"))
-# Seconds of frames near the peak. Rejects transients: one loud frame
-# surrounded by silence is a bump, not a word.
-GATE_MIN_VOICED_S = float(os.environ.get("ROBOT_GATE_MIN_VOICED_S", "0.20"))
-# Peak-to-median frame energy. Speech varies at syllable rate; a fan or motor
-# is loud, sustained and FLAT — the one case an energy threshold cannot reject.
-GATE_MIN_MODULATION = float(os.environ.get("ROBOT_GATE_MIN_MODULATION", "2.5"))
+# The session streams audio continuously and the model calls the robot's
+# functions directly. There is no push-to-listen, no per-utterance upload and
+# no ambient calibration — those existed to decide when to spend a request,
+# and a streaming session has no discrete requests to spend.
 
-# ---------------------------------------------------------------------------
-# Request budget
-# ---------------------------------------------------------------------------
-# Hard client-side ceiling, independent of what triggers the microphone. The
-# gate should prevent runaway uploads; this guarantees it, so a pathological
-# room cannot burn the quota no matter what.
-# Gemini's free tier is commonly 15 RPM — check your own limit and set this
-# slightly below it.
-GEMINI_MAX_RPM = int(os.environ.get("GEMINI_MAX_RPM", "12"))
-# Minimum gap between two requests, so a burst cannot fire back to back.
-GEMINI_MIN_INTERVAL_S = float(os.environ.get("GEMINI_MIN_INTERVAL_S", "1.0"))
-# How long to stop calling after a 429, doubling each consecutive one.
-GEMINI_COOLDOWN_S = float(os.environ.get("GEMINI_COOLDOWN_S", "20"))
-GEMINI_COOLDOWN_MAX_S = float(os.environ.get("GEMINI_COOLDOWN_MAX_S", "300"))
+# TEXT, not AUDIO. The microphone is open for the whole session, so a speaking
+# robot streams its own voice back into the model. The robot answers by moving.
+# Switching this to "AUDIO" is one line, but read audio_cues.py first.
+LIVE_RESPONSE_MODALITY = os.environ.get("ROBOT_LIVE_MODALITY", "TEXT").upper()
+
+# Capture device for the uplink; blank means the system default.
+AUDIO_INPUT_DEVICE = os.environ.get("ROBOT_AUDIO_INPUT_DEVICE", "")
+
+# Reconnect backoff after a dropped session, doubling to the cap.
+LIVE_RECONNECT_BACKOFF_S = float(os.environ.get("ROBOT_LIVE_BACKOFF_S", "2.0"))
+LIVE_RECONNECT_MAX_S = float(os.environ.get("ROBOT_LIVE_BACKOFF_MAX_S", "60.0"))
+
+# Hard ceiling on a single drive call, enforced in the tool layer rather than
+# the prompt: a limit the model can talk itself out of is not a limit.
+MAX_DRIVE_METERS = float(os.environ.get("ROBOT_MAX_DRIVE_M", "5.0"))
+
+LIVE_SYSTEM_PROMPT = os.environ.get("ROBOT_LIVE_PROMPT", """\
+You are Robin, a small wheeled robot. You hear the operator continuously and
+act by calling your functions. Do not narrate; call the function.
+
+You have no voice and no screen. Your only reply is movement:
+  answer("yes")      nods
+  answer("no")       shakes
+  answer("unclear")  the same shake as "no" - you could not make out the speech
+
+Rules that matter:
+  - Call stop() the instant you hear "stop", and whenever you are unsure
+    whether it is safe to keep moving. A needless stop costs nothing.
+  - Never guess a movement you are unsure of. The robot drives on a floor with
+    obstacles it cannot see. If you did not understand, answer("unclear").
+  - Ignore speech that is not addressed to you, and background conversation.
+  - Defaults when no number is given: 1 metre, 90 degrees.
+  - turn() takes positive degrees for RIGHT, negative for LEFT.
+    drive() takes positive metres for FORWARD, negative for BACKWARD.
+""")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -298,7 +272,8 @@ def _first_env(*names: str) -> str:
 
 # Google Gemini — the only voice backend.
 GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-GEMINI_LIVE_MODEL = os.environ.get("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-preview")
+GEMINI_LIVE_MODEL = os.environ.get(
+    "GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
 
 # Nix TTS — used only on the failure path (pre-rendered clips), never in
 # normal operation. Paths, not secrets, but same principle: no hardcoded
@@ -336,26 +311,6 @@ if VOICE_BACKEND not in VOICE_BACKENDS:
 # gemini-3.6-flash is the current Flash generation; audio in, JSON out.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "0.2"))
-
-# THE LATENCY KNOB. Gemini 3.x models reason internally before answering, and
-# on by default that costs many seconds — measured 5-19 s round trips for
-# "go forward", with no correlation to audio length because the time was spent
-# thinking, not transcribing.
-#
-# "minimal" is the level built for latency-sensitive work. Turning a spoken
-# movement command into two JSON fields needs no deliberation.
-# Levels: minimal | low | medium | high
-GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "minimal")
-
-# The reply is a transcript plus a couple of steps. Capping this stops a
-# confused model from spending seconds generating tokens nobody reads.
-GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "512"))
-
-# Transient server failures (500/503/504) are retried automatically with the
-# SAME audio. Without this the operator has to repeat the command by hand —
-# which in one 6-minute session was 3 of 13 commands.
-GEMINI_RETRIES = int(os.environ.get("GEMINI_RETRIES", "2"))
-GEMINI_RETRY_BACKOFF_S = float(os.environ.get("GEMINI_RETRY_BACKOFF_S", "0.6"))
 # Prior turns kept as text. Audio is never resent — the transcript carries what
 # the planner needs at a fraction of the tokens.
 GEMINI_HISTORY_TURNS = int(os.environ.get("GEMINI_HISTORY_TURNS", "6"))

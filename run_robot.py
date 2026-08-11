@@ -97,16 +97,26 @@ def main() -> None:
 
         battery.announce()
 
-    from voice_session import run_voice_session
+    global _MOVE
+    from live_agent import run_live_agent
+    from movement_adapter import ArduinoMovement, MovementHistory
+    from movement_context import MovementContext
+
+    ctx = MovementContext()
+    move = ArduinoMovement(ctx=ctx)
+    _MOVE = move                      # arms the crash handler's brake
+    history = MovementHistory(move)
 
     try:
-        run_voice_session(start_guardian=not (args.voice_only or args.no_guardian))
+        run_live_agent(move, history)
     except Exception:
         # Re-raised so sys.excepthook logs the cause and brakes; this only
         # exists to make the ordering explicit.
         raise
     else:
         robot_log.event("session.stop", reason="clean exit")
+    finally:
+        move.close()
 
 if __name__ == "__main__":
     main()

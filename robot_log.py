@@ -87,10 +87,7 @@ EVENTS = {
     "voice.unclear",     # audio arrived but could not be transcribed
     "voice.idle",        # listen window elapsed with no speech - NOT a fault
     "voice.say",         # what the robot would have said, had it a voice
-    "voice.noise",       # clip rejected locally, never uploaded
-    "voice.throttled",   # 429 or local budget refused the request
-    "voice.retry",       # transient server error, retrying the same audio
-    "voice.connect",     # planner backend selected
+    "voice.connect",     # live session established     # planner backend selected
     "voice.drop",
     "voice.tool",
     "audio.error",

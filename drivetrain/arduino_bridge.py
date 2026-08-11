@@ -194,20 +194,6 @@ class ArduinoBridge:
         v = max(0, min(255, int(value)))
         self._transact("V", str(v))
 
-    def set_sync_trim(self, ppt: int) -> None:
-        """Straight-line trim, parts per thousand. Positive corrects veer-right.
-
-        The firmware's sync loop equalises encoder TICKS, which is not the same
-        as equalising DISTANCE — unequal effective rolling radius makes the
-        robot curve while both wheels report matched. This biases the setpoint
-        to cancel that.
-
-        Live-settable so calibration does not need a reflash per attempt; put
-        the settled value in SYNC_TRIM_PPT to survive a reset.
-        """
-        t = max(-200, min(200, int(ppt)))
-        self._transact("W", str(t))
-
     def stop(self) -> None:
         """Send stop with a short budget — safe to call during teardown.
 

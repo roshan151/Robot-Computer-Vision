@@ -114,25 +114,6 @@ void resetFlagsInit(void) {
 #define SYNC_AUTHORITY_PCT 20     // max correction as % of base speed
 #define SYNC_FLOOR_PCT     35     // never drive a wheel below this % of base
 
-// Straight-line trim, in parts per thousand of travel.
-//
-// The sync loop equalises TICKS, which is not the same as equalising
-// DISTANCE: unequal effective rolling radius (tyre wear, a slightly larger
-// wheel, different encoder PPR) makes the robot curve while the loop happily
-// reports both wheels matched.  A P-only loop also carries inherent
-// steady-state error, so a constant load imbalance is never fully removed.
-//
-// This trim biases the setpoint to cancel both at once.  It is feedforward,
-// so it costs the loop nothing and cannot destabilise it.
-//
-//   POSITIVE value slows the LEFT wheel  -> corrects veering RIGHT
-//   NEGATIVE value slows the RIGHT wheel -> corrects veering LEFT
-//
-// Set it live with the W command (see below) while calibrating, then paste
-// the settled value here so it survives a reset.
-// Calibrate with:  python tests/calibrate_straight.py
-#define SYNC_TRIM_PPT      0      // parts per thousand, typical range +/-50
-
 // Encoder ISR debounce: real edges are >1 ms apart at full speed; noise
 // bursts from the driver MOSFET edges arrive microseconds apart.
 #define MIN_PULSE_US       150UL
@@ -204,7 +185,6 @@ long          pending_ticks  = 0;      // 0 = open-loop start
 uint8_t       pending_seq    = 0;
 
 int  open_loop_speed = OPEN_LOOP_PWM;
-int  sync_trim_ppt   = SYNC_TRIM_PPT;   // live-settable via the W command
 unsigned long last_ramp_ms = 0;
 unsigned long last_rx_ms   = 0;        // any valid frame feeds this
 
@@ -438,19 +418,6 @@ void handleFrame(char* body) {
     return;
   }
 
-  // W,<seq>,<ppt>  set the straight-line sync trim without reflashing.
-  // Positive slows the LEFT wheel (corrects veering right). Bounded because a
-  // large feedforward bias would fight the P term rather than assist it.
-  if (kind == 'W') {
-    int t;
-    if (sscanf(body + 1, ",%u,%d", &seq, &t) != 2 || seq > 255) return;
-    if (have_last_reply && (uint8_t)seq == last_seq) { sendBody(last_reply); return; }
-    sync_trim_ppt = constrain(t, -200, 200);
-    snprintf(rbuf, sizeof(rbuf), "A,%u", seq);
-    reply(seq, rbuf);
-    return;
-  }
-
   if (kind == 'V') {
     int v;
     if (sscanf(body + 1, ",%u,%d", &seq, &v) != 2 || seq > 255) return;
@@ -639,15 +606,6 @@ void loop() {
       // comparable between wheels for F, B, L and R alike.
       long pl = el * (long)enc_dir_l;
       long pr = er * (long)enc_dir_r;
-
-      // Feedforward straight-line trim. Inflating the left wheel's apparent
-      // progress makes the loop believe it is further ahead than measured, so
-      // it holds the left wheel back — which is the correction for veering
-      // right. Applied only when both wheels drive the same way (F/B); in a
-      // tank turn the wheels oppose and a straight-line trim is meaningless.
-      if (sync_trim_ppt != 0 && enc_dir_l == enc_dir_r) {
-        pl += (pl * (long)sync_trim_ppt) / 1000L;
-      }
 
       long diff = pl - pr;                       // >0 = left ahead
       if (diff >  SYNC_DIFF_MAX) diff =  SYNC_DIFF_MAX;

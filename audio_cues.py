@@ -45,13 +45,22 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 
 # (frequency Hz, duration ms, gain 0-1)
+# EXACTLY TWO TONES. The Live session holds the microphone open continuously,
+# so every sound the robot makes is heard by the model as if you had said it.
+# A per-turn "ready" chirp is therefore not a convenience, it is interference —
+# and there is no listening state to announce any more, because the robot is
+# always listening.
+#
+# What survives are the two moments where a tone carries information no other
+# channel can, and where nothing is being interrupted:
+#
+#   started  the session is up and connected. Plays BEFORE the stream opens.
+#   error    the session has died. Plays AFTER it is torn down.
+#
+# Do not add a third without a reason that beats "it goes into the microphone".
 TONES: Dict[str, Tuple[Tuple[int, int], ...]] = {
-    # Rising two-note chirp: unmistakably "go ahead".
-    "ready": ((880, 70), (1320, 90)),
-    # Single low note: heard it, working on it.
-    "ack": ((660, 90),),
-    # Falling pair: did not understand.
-    "unclear": ((660, 90), (440, 120)),
+    # Rising two-note chirp: awake, connected, listening.
+    "started": ((880, 70), (1320, 90)),
     # Harsh low triple: something is wrong, check logs.json.
     "error": ((330, 140), (330, 140), (247, 220)),
 }
@@ -179,17 +188,14 @@ class AudioCues:
             time.sleep(self.guard_s)
         return ok
 
-    def ready(self) -> bool:
-        """Waiting for a command. Play this BEFORE opening the mic stream."""
-        return self.play("ready")
-
-    def ack(self) -> bool:
-        return self.play("ack")
-
-    def unclear(self) -> bool:
-        return self.play("unclear")
+    def started(self) -> bool:
+        """Session is up. Play this BEFORE the microphone stream opens, so the
+        tone cannot land in the audio being streamed to the model."""
+        return self.play("started")
 
     def error(self) -> bool:
+        """Session has died. Play this AFTER it is torn down, for the same
+        reason in reverse: by then nothing is listening."""
         return self.play("error", guard=False)
 
     def save_wavs(self, directory: str) -> list:
