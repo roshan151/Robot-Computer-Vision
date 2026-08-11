@@ -9,6 +9,7 @@ import threading
 from typing import List, Optional
 
 import config
+import robot_log
 from movement_adapter import ArduinoMovement
 from movement_context import MovementContext
 from vision_client import RobotVision
@@ -56,8 +57,22 @@ class VisionGuardian(threading.Thread):
                 continue
             try:
                 if self._vision.detect_objects(self._objects):
-                    logger.warning("guardian: halt condition detected → stop")
-                    self._move.stop()
+                    # Throttled: the guardian ticks at VISION_GUARD_HZ and an
+                    # obstacle stays in frame, so an untrottled event here would
+                    # bury everything else in the log.
+                    robot_log.event_throttled(
+                        "estop", key="guardian", window_s=5.0,
+                        level=logging.WARNING, reason="guardian: halt object seen",
+                        objects=self._objects,
+                    )
+                    # MUST be emergency_stop, not stop().  The guardian runs on
+                    # its own thread while the main thread is blocked inside an
+                    # encoder-counted move, and move() holds the bridge's
+                    # _cmd_lock for the whole duration.  A plain stop() would
+                    # queue behind that lock and only fire once the move had
+                    # already finished — which is why this halt path never
+                    # actually halted anything.
+                    self._move.emergency_stop()
             except Exception as e:
                 logger.debug("guardian tick failed: %s", e)
 

@@ -79,8 +79,25 @@ class ArduinoMovement:
         self._wrap_moving(self._dt.right, angle=deg)
 
     def stop(self, _unused: Any = None) -> None:
+        """Graceful stop.
+
+        WARNING: this blocks behind any in-flight encoder-counted move — the
+        bridge holds _cmd_lock for the whole move.  Calling it from a second
+        thread to halt a move in progress does not work; the S arrives after
+        the move has already completed.  Use emergency_stop() for that.
+        """
         logger.info("stop")
         self._dt.stop()
+
+    def emergency_stop(self) -> None:
+        """Halt a move already in progress. Safe to call from any thread.
+
+        Deliberately does not log — every caller already emits an `estop`
+        event with the reason attached, and the reason is the useful half.
+        """
+        self._dt.emergency_stop()
+        if self._ctx:
+            self._ctx.set_moving(False)
 
 
 class MovementHistory:

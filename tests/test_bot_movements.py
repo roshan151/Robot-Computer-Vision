@@ -42,20 +42,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--port",
-        default="/dev/cu.usbserial-A5069RR4",
+        default=config.SERIAL_PORT,
         help="Serial port override (default from ROBOT_SERIAL_PORT/config).",
     )
     parser.add_argument(
         "--baud",
         type=int,
-        default=115200,
+        default=config.BAUD_RATE,
         help="Baud rate override (default from ROBOT_SERIAL_BAUD/config).",
     )
     parser.add_argument(
         "--speed",
         type=float,
-        default=50.0,
-        help="Movement speed percent (0-100). Default: 50 (reduced from 60 to lower inrush current).",
+        default=config.DEFAULT_SPEED_PERCENT,
+        help="Movement speed percent (0-100). Default: config.DEFAULT_SPEED_PERCENT (firmware ramps PWM, so inrush is handled there).",
     )
     parser.add_argument(
         "--move-distance",

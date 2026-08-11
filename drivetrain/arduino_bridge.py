@@ -57,6 +57,10 @@ MOVE_TIMEOUT_S = float(getattr(config, "MOVE_TIMEOUT_S", 20.0))
 PING_INTERVAL_S = float(getattr(config, "PING_INTERVAL_S", 0.25))
 BOOT_WAIT_S = float(getattr(config, "ARDUINO_DRAIN_WAIT_S", 2.5)) + 1.5
 
+ESTOP_SEQ_MIN = int(getattr(config, "ESTOP_SEQ_MIN", 240))
+ESTOP_SEQ_MAX = int(getattr(config, "ESTOP_SEQ_MAX", 255))
+NORMAL_SEQ_MAX = int(getattr(config, "NORMAL_SEQ_MAX", ESTOP_SEQ_MIN - 1))
+
 
 class ProtocolError(RuntimeError):
     """The firmware rejected a command (N frame)."""
@@ -76,6 +80,10 @@ class ArduinoBridge:
 
         self._parser = FrameParser()
         self._seq = 0
+        # Reserved sequence band for out-of-band emergency stops — see
+        # emergency_stop().  Starts one below the band so the first e-stop
+        # uses ESTOP_SEQ_MIN.
+        self._estop_seq = ESTOP_SEQ_MAX
 
         # _cmd_lock serialises whole transactions (send -> reply) so two
         # callers can never interleave; _write_lock protects the raw port
@@ -187,11 +195,46 @@ class ArduinoBridge:
         self._transact("V", str(v))
 
     def stop(self) -> None:
-        """Send stop with a short budget — safe to call during teardown."""
+        """Send stop with a short budget — safe to call during teardown.
+
+        NOTE: this takes _cmd_lock, so it BLOCKS until any in-flight
+        encoder-counted move() completes.  It cannot interrupt a move.
+        To halt a move already in progress, use emergency_stop().
+        """
         try:
             self._transact("S", retries=1, ack_timeout=0.5)
         except Exception:
             logger.warning("stop(): no ACK received (already disconnected?)")
+
+    def emergency_stop(self) -> None:
+        """Out-of-band brake that works DURING a blocking move.
+
+        move() holds _cmd_lock for its entire duration (up to MOVE_TIMEOUT_S),
+        so anything routed through _transact() — including stop() — queues
+        behind it and arrives only after the move has already finished.  That
+        is not a halt, it is a very late no-op.
+
+        This writes the S frame straight to the port under _write_lock only,
+        the same path the heartbeat thread already uses concurrently with an
+        active move, so it is safe to call from any thread.
+
+        Firmware side (drivetrain.ino): on S with move_active it calls
+        finishMove("STOP"), which emits the D frame the blocked move() is
+        waiting on.  move() then raises RuntimeError — that exception IS the
+        cancellation signal, and callers should treat it as such rather than
+        as a fault.
+
+        Sequence numbers come from a reserved band because the firmware
+        deduplicates against the single previous seq: an e-stop reusing the
+        in-flight move's seq would be swallowed as a retransmission.
+        """
+        span = ESTOP_SEQ_MAX - ESTOP_SEQ_MIN + 1
+        self._estop_seq = ESTOP_SEQ_MIN + ((self._estop_seq - ESTOP_SEQ_MIN + 1) % span)
+        try:
+            self._raw_send(f"S,{self._estop_seq}")
+            logger.warning("emergency_stop: out-of-band S sent (seq %d)", self._estop_seq)
+        except Exception as e:
+            logger.error("emergency_stop: raw write failed: %s", e)
 
     def move(self, direction: str, speed_pwm: int, ticks: int) -> None:
         """Blocking encoder-counted move.
@@ -245,7 +288,9 @@ class ArduinoBridge:
     # ------------------------------------------------------------------ #
 
     def _next_seq(self) -> int:
-        self._seq = (self._seq + 1) % 256
+        # Capped below ESTOP_SEQ_MIN so normal traffic never collides with the
+        # emergency-stop band (see emergency_stop()).
+        self._seq = (self._seq + 1) % (NORMAL_SEQ_MAX + 1)
         return self._seq
 
     def _transact(self, kind: str, *args: str,

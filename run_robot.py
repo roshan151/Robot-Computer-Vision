@@ -23,7 +23,29 @@ _REPO = Path(__file__).resolve().parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-logging.basicConfig(level=logging.INFO)
+import robot_log
+
+# Registered by main() once the drivetrain exists, so the fatal path can brake.
+_MOVE = None
+
+
+def _emergency_brake(cause: str) -> None:
+    """Last action before the process dies: get the motors off.
+
+    Runs from sys.excepthook / threading.excepthook / the signal handler, so it
+    must never raise — a failure here would mask the fault we are trying to
+    report. The firmware's link watchdog is the backstop for SIGKILL, which no
+    handler can intercept.
+    """
+    if _MOVE is None:
+        return
+    try:
+        _MOVE.emergency_stop()
+        robot_log.event("estop", logging.CRITICAL, reason=f"process dying: {cause}")
+    except Exception as e:
+        robot_log.event("estop", logging.CRITICAL, ok=False,
+                        reason=f"process dying: {cause}",
+                        err=f"{type(e).__name__}: {e}")
 
 sockets = [
     "/tmp/pisugar-server.sock",
@@ -56,11 +78,33 @@ def main() -> None:
         action="store_true",
         help="Alias for --voice-only (kept for compatibility).",
     )
+    parser.add_argument(
+        "--log", default=None,
+        help="Path to the JSON Lines event log (default: config.LOG_PATH).",
+    )
     args = parser.parse_args()
+
+    log_path = robot_log.setup(args.log)
+    robot_log.install_crash_handlers(on_fatal=_emergency_brake)
+    robot_log.event(
+        "session.start",
+        mode="voice-only" if (args.voice_only or args.no_guardian) else "full",
+        pid=__import__("os").getpid(),
+        port=__import__("config").SERIAL_PORT,
+        speed_pct=__import__("config").DEFAULT_SPEED_PERCENT,
+        log=str(log_path),
+    )
 
     from voice_session import run_voice_session
 
-    run_voice_session(start_guardian=not (args.voice_only or args.no_guardian))
+    try:
+        run_voice_session(start_guardian=not (args.voice_only or args.no_guardian))
+    except Exception:
+        # Re-raised so sys.excepthook logs the cause and brakes; this only
+        # exists to make the ordering explicit.
+        raise
+    else:
+        robot_log.event("session.stop", reason="clean exit")
 
 if __name__ == "__main__":
     main()

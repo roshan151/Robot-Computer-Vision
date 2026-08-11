@@ -13,7 +13,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
+import config
 
 from prompts_and_glossary import commands as glossary_commands, movement_prompt
 
@@ -72,14 +72,15 @@ class VoiceRobotSession:
         move: ArduinoMovement,
         history: MovementHistory,
         vision: Optional[RobotVision],
-        openai_model: str = "gpt-4o-mini",
+        openai_model: Optional[str] = None,
     ) -> None:
         self.move = move
         self.history = history
         self.vision = vision
-        self.openai_model = openai_model
-        load_dotenv()
-        self.openai_api_key = os.getenv("OPENAI_API_KEY_ROBIN") or os.getenv("OPENAI_API_KEY")
+        # config loads .env once at import and is the single source of truth
+        # for both the model name and the credential.
+        self.openai_model = openai_model or config.OPENAI_MODEL
+        self.openai_api_key = config.OPENAI_API_KEY
         self._nix = None
         self._sd = None
         self._sr = None
@@ -102,17 +103,14 @@ class VoiceRobotSession:
             self._mic = sr.Microphone()
         except Exception as e:
             logger.warning("speech_recognition unavailable: %s", e)
-        nix_dir = os.getenv("NIX_TTS_DIR", "/home/roshan151/nix-tts/nix-tts")
-        if os.path.isdir(nix_dir):
+        nix_dir = config.NIX_TTS_DIR
+        if nix_dir and os.path.isdir(nix_dir):
             try:
                 if nix_dir not in sys.path:
                     sys.path.insert(0, nix_dir)
                 from nix.models.TTS import NixTTSInference  # type: ignore
 
-                model_dir = os.getenv(
-                    "NIX_TTS_MODEL",
-                    "/home/roshan151/nix-tts/nix-deterministic/nix-deterministic",
-                )
+                model_dir = config.NIX_TTS_MODEL or nix_dir
                 self._nix = NixTTSInference(model_dir=model_dir)
                 self._samplerate = 22050
             except Exception as e:
@@ -129,11 +127,12 @@ class VoiceRobotSession:
         print(text)
 
     def query_gpt(self, messages: list) -> str:
-        if not self.openai_api_key:
-            raise RuntimeError("Set OPENAI_API_KEY or OPENAI_API_KEY_ROBIN")
+        # require() names the variable and the three places it can live, which
+        # is a better first line in logs.json than a vendor 401 three frames in.
+        api_key = self.openai_api_key or config.require("OPENAI_API_KEY")
         import openai
 
-        client = openai.OpenAI(api_key=self.openai_api_key)
+        client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model=self.openai_model,
             messages=messages,

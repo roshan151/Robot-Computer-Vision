@@ -19,7 +19,7 @@ Notes:
     of ticks from one 100 ms report to the next are noise.
 
   python test_encoders.py
-  python test_encoders.py --port /dev/cu.usbserial-A5069RR4
+  python test_encoders.py --port /dev/ttyUSB0
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ import threading
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config
 
 from drivetrain import ArduinoBridge
 
@@ -42,8 +43,8 @@ BURST_THRESHOLD = 200
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Live encoder counts for hand-spin checks.")
-    p.add_argument("--port", default="/dev/cu.usbserial-A5069RR4", help="Serial port.")
-    p.add_argument("--baud", type=int, default=115200, help="Baud rate.")
+    p.add_argument("--port", default=config.SERIAL_PORT, help="Serial port.")
+    p.add_argument("--baud", type=int, default=config.BAUD_RATE, help="Baud rate.")
     args = p.parse_args()
 
     state = {"l": 0, "r": 0, "pl": None, "pr": None, "t": time.monotonic()}

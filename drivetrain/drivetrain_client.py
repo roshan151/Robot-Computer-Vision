@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .arduino_bridge import ArduinoBridge
 import config
@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 def duty_from_percent(speed_percent: float) -> int:
     """Map 0–100 % speed to 0–255 PWM duty cycle."""
     return max(0, min(255, int(round(speed_percent / 100.0 * 255.0))))
+
+
+def _speed(speed: Optional[float]) -> float:
+    """Resolve a speed argument against the configured default.
+
+    Ramping is handled by the firmware (RAMP_STEP/RAMP_MS in drivetrain.ino,
+    ~0.5 PWM per ms up, 2x that on softStop), which is what keeps the inrush
+    and back-EMF off the supply rail.  Nothing here should ramp — a second
+    ramp on the host would only fight it.
+    """
+    return config.DEFAULT_SPEED_PERCENT if speed is None else float(speed)
 
 
 def _ticks_per_metre() -> float:
@@ -78,7 +89,7 @@ class SerialDrivetrain:
     # High-level movement API  (encoder-counted, blocking, in metres)
     # ------------------------------------------------------------------ #
 
-    def straight_m(self, meters: float, speed: float = 70.0) -> None:
+    def straight_m(self, meters: float, speed: Optional[float] = None) -> None:
         """
         Drive forward exactly `meters` metres.
 
@@ -89,54 +100,61 @@ class SerialDrivetrain:
 
         Args:
             meters: Distance in metres (must be > 0).
-            speed:  Speed as 0–100 % of full PWM. Default 70 %.
+            speed:  Speed as 0–100 % of full PWM.
+                    None -> config.DEFAULT_SPEED_PERCENT.
         """
         if meters <= 0:
             raise ValueError(f"straight_m: meters must be positive, got {meters}")
         ticks = max(1, int(meters * _ticks_per_metre()))
         self._move_and_verify(
-            "F", duty_from_percent(speed), ticks,
+            "F", duty_from_percent(_speed(speed)), ticks,
             label=f"straight_m({meters:.3f}m)",
         )
 
-    def reverse_m(self, meters: float, speed: float = 70.0) -> None:
+    def reverse_m(self, meters: float, speed: Optional[float] = None) -> None:
         """
         Drive backward exactly `meters` metres (encoder-counted).
 
         Args:
             meters: Distance in metres (must be > 0).
-            speed:  Speed as 0–100 %. Default 70 %.
+            speed:  Speed as 0–100 %. None -> config.DEFAULT_SPEED_PERCENT.
         """
         if meters <= 0:
             raise ValueError(f"reverse_m: meters must be positive, got {meters}")
         ticks = max(1, int(meters * _ticks_per_metre()))
         self._move_and_verify(
-            "B", duty_from_percent(speed), ticks,
+            "B", duty_from_percent(_speed(speed)), ticks,
             label=f"reverse_m({meters:.3f}m)",
         )
 
-    def right(self, angle: float = 90.0, speed: float = 50.0) -> None:
+    def right(self, angle: float = 90.0, speed: Optional[float] = None) -> None:
         """Tank-turn right by `angle` degrees (encoder-counted)."""
         if angle <= 0:
             raise ValueError(f"right: angle must be positive, got {angle}")
         ticks = max(1, int(angle * config.TICKS_PER_DEGREE))
         self._move_and_verify(
-            "R", duty_from_percent(speed), ticks,
+            "R", duty_from_percent(_speed(speed)), ticks,
             label=f"right({angle:.1f}°)",
         )
 
-    def left(self, angle: float = 90.0, speed: float = 50.0) -> None:
+    def left(self, angle: float = 90.0, speed: Optional[float] = None) -> None:
         """Tank-turn left by `angle` degrees (encoder-counted)."""
         if angle <= 0:
             raise ValueError(f"left: angle must be positive, got {angle}")
         ticks = max(1, int(angle * config.TICKS_PER_DEGREE))
         self._move_and_verify(
-            "L", duty_from_percent(speed), ticks,
+            "L", duty_from_percent(_speed(speed)), ticks,
             label=f"left({angle:.1f}°)",
         )
 
     def stop(self) -> None:
+        """Graceful stop. BLOCKS behind any in-flight move() — see
+        emergency_stop() for the path that can interrupt one."""
         self._bridge.stop()
+
+    def emergency_stop(self) -> None:
+        """Halt a move already in progress. Safe from any thread."""
+        self._bridge.emergency_stop()
 
     # ------------------------------------------------------------------ #
     # Open-loop intent methods (fire-and-forget / brain_loop streaming use)

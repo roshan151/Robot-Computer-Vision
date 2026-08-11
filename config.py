@@ -1,8 +1,29 @@
-"""Serial link, motion calibration, and vision service defaults."""
+"""Serial link, motion calibration, secrets, and vision service defaults.
+
+Single source of truth for configuration. Nothing else in the tree should call
+os.environ directly — if a setting matters, it gets a name here.
+
+Secrets are READ here, never STORED here. This file is committed; the values
+live in .env (gitignored) or /etc/robot.env (systemd). See .env.example.
+"""
 
 import os
+from pathlib import Path
 
-# USB serial from Arduino (often /dev/ttyUSB0 or /dev/ttyACM0)
+# Load .env before anything reads a value, so imports in any order behave the
+# same. Optional: on the Pi the systemd unit supplies the environment instead
+# (EnvironmentFile=/etc/robot.env), and python-dotenv may not be installed at
+# all in a minimal deployment.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:  # pragma: no cover - absence is a valid deployment
+    pass
+
+# USB serial from Arduino (often /dev/ttyUSB0 or /dev/ttyACM0).
+# On macOS this is a /dev/cu.usbserial-* name — set ROBOT_SERIAL_PORT rather
+# than editing this, so the same checkout runs on the Pi and on a laptop.
 SERIAL_PORT = os.environ.get("ROBOT_SERIAL_PORT", "/dev/ttyUSB0")
 BAUD_RATE = int(os.environ.get("ROBOT_SERIAL_BAUD", "115200"))
 
@@ -76,6 +97,50 @@ HANDSHAKE_TIMEOUT_S: float = float(os.environ.get("ROBOT_HANDSHAKE_TIMEOUT_S", "
 DEFAULT_TURN_DEGREES = float(os.environ.get("ROBOT_DEFAULT_TURN_DEG", "90"))
 DEFAULT_MOVE_METERS = float(os.environ.get("ROBOT_DEFAULT_MOVE_M", "1.0"))
 
+# Default PWM duty for every encoder-counted move, as a percentage of full
+# scale.  Measured on hardware: right(30) completes in < 1.2 s at 70 %, which
+# is the budget the gesture channel needs (a NO gesture is three turns).
+#
+# Ramping is NOT done here.  The firmware already slews PWM at RAMP_STEP/RAMP_MS
+# = 0.5 PWM per ms (drivetrain.ino), so 70 % (=178 PWM) is reached in ~356 ms
+# from rest, and softStop() ramps down at 2x that rate before engaging the
+# brake.  That is what protects the supply rail from the inrush/back-EMF dip
+# that resets the board.  Adding a second ramp on the host would fight it.
+DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# The robot has no verbal feedback, so this file is the only place a fault is
+# ever explained. JSON Lines — one object per line, appendable, and a process
+# killed mid-write costs one record instead of the whole file.
+LOG_PATH = os.environ.get("ROBOT_LOG_PATH", "logs.json")
+LOG_MAX_BYTES = int(os.environ.get("ROBOT_LOG_MAX_BYTES", "2000000"))
+LOG_BACKUPS = int(os.environ.get("ROBOT_LOG_BACKUPS", "3"))
+
+# ---------------------------------------------------------------------------
+# Emergency stop
+# ---------------------------------------------------------------------------
+# ArduinoBridge.move() holds _cmd_lock for the whole blocking move, so a normal
+# stop() issued from another thread cannot interrupt it — it waits for the lock
+# and arrives after the move has already finished.  emergency_stop() bypasses
+# _cmd_lock and writes an out-of-band S frame directly.
+#
+# The firmware deduplicates on the single previous sequence number, so the
+# e-stop's seq must differ from the in-flight move's.  Reserve the top of the
+# range for e-stops and cap the normal counter below it.
+ESTOP_SEQ_MIN = 240
+ESTOP_SEQ_MAX = 255
+NORMAL_SEQ_MAX = ESTOP_SEQ_MIN - 1     # normal commands use 0..239
+
+# ---------------------------------------------------------------------------
+# Gesture vocabulary — the robot's only output channel during normal operation
+# ---------------------------------------------------------------------------
+# The robot never speaks.  It answers by moving.  Audio is reserved for the
+# failure path, and only ever plays once the voice session is already torn down.
+GESTURE_YES_METERS = float(os.environ.get("ROBOT_GESTURE_YES_M", "0.1"))
+GESTURE_NO_DEGREES = float(os.environ.get("ROBOT_GESTURE_NO_DEG", "30.0"))
+
 # Vision HTTP API (run Vision service: uvicorn Vision.app:app --host 0.0.0.0 --port 8080)
 VISION_SERVICE_URL = os.environ.get(
     "VISION_SERVICE_URL",
@@ -91,3 +156,79 @@ VISION_HALT_OBJECTS = [
 
 # Guardian poll rate (Hz) while robot reports motion
 VISION_GUARD_HZ = float(os.environ.get("VISION_GUARD_HZ", "4.0"))
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+# Values come from the environment or .env — never from this file, which is
+# committed. Missing secrets resolve to "" rather than raising at import time,
+# so tests and offline tools can import config without credentials present.
+# Call require() at the point of use to fail with a message that names the
+# variable and where to put it.
+#
+# Source order (first non-empty wins), per secret:
+#   1. process environment  (systemd EnvironmentFile=/etc/robot.env)
+#   2. .env next to this file
+#   3. ""  -> require() raises with instructions
+
+def _first_env(*names: str) -> str:
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v.strip()
+    return ""
+
+
+# OpenAI — _ROBIN suffix kept as the preferred alias for this robot's key.
+OPENAI_API_KEY = _first_env("OPENAI_API_KEY_ROBIN", "OPENAI_API_KEY")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+# Google Gemini — the Live API backend (Phase 2).
+GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
+GEMINI_LIVE_MODEL = os.environ.get("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-preview")
+
+# Which backend the voice session should use.
+VOICE_BACKEND = os.environ.get("ROBOT_VOICE_BACKEND", "gemini").lower()
+
+# Nix TTS — used only on the failure path (pre-rendered clips), never in
+# normal operation. Paths, not secrets, but same principle: no hardcoded
+# home directories in the tree.
+NIX_TTS_DIR = os.environ.get("NIX_TTS_DIR", "")
+NIX_TTS_MODEL = os.environ.get("NIX_TTS_MODEL", "")
+
+# Bluetooth headset (see check_bt_audio.sh).
+BT_MAC = os.environ.get("BT_MAC", "")
+
+# Every name here is treated as sensitive by the log redactor.
+SECRET_NAMES = (
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+)
+
+
+class MissingSecret(RuntimeError):
+    """A required credential is not configured."""
+
+
+def require(name: str) -> str:
+    """Return a secret, or raise with instructions naming the variable.
+
+    Preferred over reading the constant directly, so a missing key produces
+    one clear line in logs.json instead of a 401 from a vendor SDK three
+    frames deep.
+    """
+    value = globals().get(name, "")
+    if not value:
+        raise MissingSecret(
+            f"{name} is not set. Provide it in one of:\n"
+            f"  - {Path(__file__).resolve().parent / '.env'}  (development)\n"
+            f"  - /etc/robot.env                              (systemd service)\n"
+            f"  - the process environment\n"
+            f"See .env.example for the full list."
+        )
+    return str(value)
+
+
+def secret_values() -> tuple:
+    """Non-empty secret values, for redaction. Never log the result."""
+    return tuple(v for v in (globals().get(n, "") for n in SECRET_NAMES) if v)

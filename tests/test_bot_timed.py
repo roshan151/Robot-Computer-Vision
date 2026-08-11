@@ -34,6 +34,7 @@ from typing import List, Tuple
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config
 
 # (label, drivetrain method name)
 Step = Tuple[str, str]
@@ -77,11 +78,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Timed open-loop movement test (no encoder dependency).",
     )
-    p.add_argument("--port", default="/dev/cu.usbserial-A5069RR4",
+    p.add_argument("--port", default=config.SERIAL_PORT,
                    help="Serial port.")
-    p.add_argument("--baud", type=int, default=115200, help="Baud rate.")
-    p.add_argument("--speed", type=float, default=50.0,
-                   help="Speed percent 0-100. Default: 50.")
+    p.add_argument("--baud", type=int, default=config.BAUD_RATE, help="Baud rate.")
+    p.add_argument("--speed", type=float, default=config.DEFAULT_SPEED_PERCENT,
+                   help="Speed percent 0-100. Default: config.DEFAULT_SPEED_PERCENT.")
     p.add_argument("--duration", type=float, default=5.0,
                    help="Seconds to drive per step. Default: 5. "
                         "At 50%% speed the robot covers roughly 0.2 m per second "
