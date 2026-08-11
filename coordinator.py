@@ -15,7 +15,6 @@ from vision_client import RobotVision
 
 logger = logging.getLogger(__name__)
 
-
 class VisionGuardian(threading.Thread):
     """
     If VISION_HALT_OBJECTS is non-empty and any are seen while `ctx.is_moving`,

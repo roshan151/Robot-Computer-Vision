@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import socket
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent
@@ -24,6 +25,23 @@ if str(_REPO) not in sys.path:
 
 logging.basicConfig(level=logging.INFO)
 
+sockets = [
+    "/tmp/pisugar-server.sock",
+    "/tmp/pisugar.sock"
+]
+def pisugar_command(command):
+
+
+    for path in sockets:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(path)
+                s.sendall((command + "\n").encode())
+                return s.recv(1024).decode().strip()
+        except (FileNotFoundError, ConnectionRefusedError):
+            pass
+
+    raise RuntimeError("PiSugar Power Manager not running")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Voice + vision + Arduino stack")
@@ -43,7 +61,6 @@ def main() -> None:
     from voice_session import run_voice_session
 
     run_voice_session(start_guardian=not (args.voice_only or args.no_guardian))
-
 
 if __name__ == "__main__":
     main()

@@ -283,4 +283,3 @@ Wire the white B wires: left → D4, right → D7 (blue → 5V, green → GND, y
 Flash (./flash.sh or IDE) — confirm the drv8871-v4-quad stamp.
 Calibrate polarity: run tests/test_encoders.py, roll each wheel in the robot's forward direction by hand. Both must count up. A side counting down → set its ENC_x_INVERT to 1, re-flash, re-check.
 Then test_bot_movements.py — with working, signed encoders this should be the first honest closed-loop run the bot has ever had.
-
