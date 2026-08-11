@@ -14,6 +14,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 import config
+import robot_log
+from audio_cues import cues
 
 from prompts_and_glossary import commands as glossary_commands, movement_prompt
 
@@ -39,6 +41,15 @@ Rules:
 - Vision keys: capture, record, detect, scan, terminate — use null except detect/scan take an array of object names, e.g. ["plant","plants"].
 - For scan, value is the same array style as detect.
 """
+
+
+class _NoSpeech(Exception):
+    """Nobody spoke inside the listen window.
+
+    Deliberately not a RuntimeError: silence is the idle state, not a fault,
+    and conflating the two is what produced the old 'Speak your command' /
+    'No speech heard' loop every ten seconds.
+    """
 
 
 def _strip_code_fence(text: str) -> str:
@@ -86,6 +97,8 @@ class VoiceRobotSession:
         self._sr = None
         self._recognizer = None
         self._mic = None
+        self._calibrated = False
+        self._cues = cues()
         self._init_audio()
 
     def _init_audio(self) -> None:
@@ -117,14 +130,31 @@ class VoiceRobotSession:
                 logger.warning("Nix TTS unavailable: %s", e)
 
     def speak(self, text: str) -> None:
-        logger.info("TTS: %s", text)
-        if self._nix is not None and self._sd is not None:
-            c, c_length, _phoneme = self._nix.tokenize(text)
-            xw = self._nix.vocalize(c, c_length)
-            self._sd.play(xw[0, 0], self._samplerate)
-            self._sd.wait()
+        """Report something to the operator.
+
+        The robot is silent by design, and it runs headless — so by default
+        this neither prints nor speaks. The text goes to logs.json, which is
+        where you would look for it anyway.
+
+        Printing was actively harmful: with no screen attached it produced
+        nothing but a growing journal, and the message it emitted most often
+        was a prompt to talk that the operator could not see.
+
+        Set ROBOT_SPEECH=1 to restore spoken output via Nix TTS — useful at a
+        desk, but note it puts the robot's voice back into the microphone.
+        """
+        robot_log.event("voice.say", text=text)
+        if not config.ROBOT_SPEECH_ENABLED:
             return
-        print(text)
+        if self._nix is not None and self._sd is not None:
+            try:
+                c, c_length, _phoneme = self._nix.tokenize(text)
+                xw = self._nix.vocalize(c, c_length)
+                self._sd.play(xw[0, 0], self._samplerate)
+                self._sd.wait()
+            except Exception as e:
+                robot_log.event("audio.error", logging.WARNING,
+                                stage="tts", err=f"{type(e).__name__}: {e}")
 
     def query_gpt(self, messages: list) -> str:
         # require() names the variable and the three places it can live, which
@@ -142,20 +172,64 @@ class VoiceRobotSession:
         )
         return response.choices[0].message.content.strip()
 
+    def calibrate(self) -> None:
+        """Measure the ambient noise floor once, at startup.
+
+        This used to run on every turn, costing LISTEN_CALIBRATE_S of dead air
+        before each command. Once is enough because dynamic_energy_threshold
+        keeps adapting the threshold as the session runs.
+        """
+        if not self._mic or not self._recognizer or self._calibrated:
+            return
+        try:
+            with self._mic as source:
+                self._recognizer.adjust_for_ambient_noise(
+                    source, duration=config.LISTEN_CALIBRATE_S
+                )
+            self._recognizer.dynamic_energy_threshold = True
+            self._calibrated = True
+            robot_log.event("voice.calibrate",
+                            threshold=round(self._recognizer.energy_threshold, 1))
+        except Exception as e:
+            robot_log.event("audio.error", logging.WARNING,
+                            stage="calibrate", err=f"{type(e).__name__}: {e}")
+
     def listen_once(self) -> str:
+        """Wait for one spoken command. Blocks silently until speech arrives.
+
+        Two ordering rules matter here:
+
+        1. The ready cue plays BEFORE the capture stream opens. Playing it with
+           the stream live would put the tone in the buffer that listen() then
+           reads, and the robot would hear its own beep as the start of the
+           command.
+        2. Ambient calibration happens once in calibrate(), not per turn.
+
+        A silence timeout is not an error and not a prompt — the caller re-arms
+        without any output at all.
+        """
         if not self._sr or not self._mic or not self._recognizer:
             raise RuntimeError("microphone / speech_recognition not available")
+
+        self.calibrate()
+        self._cues.ready()          # outside the `with` block, deliberately
+
         with self._mic as source:
-            self._recognizer.adjust_for_ambient_noise(source)
-            self.speak("Speak your command.")
             try:
-                audio = self._recognizer.listen(source, timeout=10, phrase_time_limit=12)
+                audio = self._recognizer.listen(
+                    source,
+                    timeout=config.LISTEN_TIMEOUT_S or None,
+                    phrase_time_limit=config.LISTEN_PHRASE_LIMIT_S,
+                )
             except self._sr.WaitTimeoutError as e:
-                raise RuntimeError("timeout: no speech") from e
+                raise _NoSpeech("no speech within listen window") from e
+
         try:
-            return str(self._recognizer.recognize_google(audio)).lower()
+            text = str(self._recognizer.recognize_google(audio)).lower()
         except self._sr.UnknownValueError as e:
             raise RuntimeError("could not understand audio") from e
+        robot_log.event("voice.heard", text=text)
+        return text
 
     def _dispatch_step(self, step: Dict[str, Any]) -> bool:
         """
@@ -228,16 +302,26 @@ class VoiceRobotSession:
         while listening:
             try:
                 speech = self.listen_once()
+            except _NoSpeech:
+                # Nobody spoke. This is the normal idle state, not a fault:
+                # re-arm the microphone with no cue, no print, no prompt. The
+                # throttled event is purely so the log can distinguish "idle"
+                # from "wedged" — silence alone looks identical to a hang.
+                robot_log.event_throttled(
+                    "voice.idle", key="idle", window_s=600.0,
+                    waiting_s=config.LISTEN_TIMEOUT_S,
+                )
+                continue
             except RuntimeError as e:
-                if "timeout" in str(e).lower():
-                    self.speak("No speech heard. Try again.")
-                    continue
-                logger.warning("listen: %s", e)
-                self.speak("Could not understand audio.")
+                # Heard something, could not transcribe it. Same answer the
+                # robot gives for "no": one gesture, no speech.
+                robot_log.event("voice.unclear", logging.WARNING, err=str(e))
+                self._cues.unclear()
                 continue
             except Exception as e:
-                logger.exception("listen failed: %s", e)
-                self.speak("Could not understand audio.")
+                robot_log.event("audio.error", logging.ERROR,
+                                stage="listen", err=f"{type(e).__name__}: {e}")
+                self._cues.unclear()
                 continue
 
             messages.append({"role": "user", "content": speech})

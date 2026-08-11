@@ -78,6 +78,12 @@ EVENTS = {
     "link.down",
     "link.reset",         # Arduino rebooted under us
     "encoder.warn",       # stall / sync / coverage
+    # voice
+    "voice.calibrate",   # ambient noise floor measured (once per session)
+    "voice.heard",       # a command was transcribed
+    "voice.unclear",     # audio arrived but could not be transcribed
+    "voice.idle",        # listen window elapsed with no speech - NOT a fault
+    "voice.say",         # what the robot would have said, had it a voice
     # voice (phases 2+)
     "voice.connect",
     "voice.drop",

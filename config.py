@@ -109,6 +109,36 @@ DEFAULT_MOVE_METERS = float(os.environ.get("ROBOT_DEFAULT_MOVE_M", "1.0"))
 DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
 
 # ---------------------------------------------------------------------------
+# Audio cues + listening
+# ---------------------------------------------------------------------------
+# The robot runs headless, so a short tone is the only way to know it is
+# waiting. Tones only — never speech. See audio_cues.py for why ordering
+# (cue first, THEN open the microphone) is what keeps it out of the input.
+AUDIO_CUES_ENABLED = os.environ.get("ROBOT_AUDIO_CUES", "1") not in ("0", "false", "no")
+# Spoken output. Off by design — the robot answers with gestures, and its own
+# voice in the microphone is the failure mode the whole design avoids. Turning
+# this on also restores console printing of what it would have said.
+ROBOT_SPEECH_ENABLED = os.environ.get("ROBOT_SPEECH", "0") in ("1", "true", "yes")
+AUDIO_CUE_DEVICE = os.environ.get("ROBOT_AUDIO_CUE_DEVICE", "")
+AUDIO_CUE_GAIN = float(os.environ.get("ROBOT_AUDIO_CUE_GAIN", "0.25"))
+# Settle time after a cue before capture opens, covering the room's reverb
+# tail. Raise it if the first syllable of a command goes missing.
+AUDIO_CUE_GUARD_S = float(os.environ.get("ROBOT_AUDIO_CUE_GUARD_S", "0.15"))
+
+# How long one listen() call waits for speech to START before looping.
+# This is NOT a prompt interval: a timeout re-arms the microphone silently,
+# with no cue and no output. It exists only so a wedged capture device can be
+# distinguished from an idle one — an infinite block would hang forever with
+# nothing in the log. Raise it to make the robot more patient; it never
+# changes what the operator hears.
+LISTEN_TIMEOUT_S = float(os.environ.get("ROBOT_LISTEN_TIMEOUT_S", "300"))
+# Maximum length of a single spoken command, once speech has begun.
+LISTEN_PHRASE_LIMIT_S = float(os.environ.get("ROBOT_LISTEN_PHRASE_S", "12"))
+# One-off ambient noise calibration at startup (seconds). Per-turn calibration
+# would add this much dead air to every single command.
+LISTEN_CALIBRATE_S = float(os.environ.get("ROBOT_LISTEN_CALIBRATE_S", "1.0"))
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 # The robot has no verbal feedback, so this file is the only place a fault is
