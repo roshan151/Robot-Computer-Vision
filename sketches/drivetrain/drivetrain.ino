@@ -3,15 +3,24 @@
  *
  * Board  : Arduino UNO/Nano-class (ATmega328P, FTDI or CH340 USB-serial)
  * Drivers: 2x DRV8871 breakout (one per motor, ILIM ~2.1 A via 30k)
- * Sensors: 2x single-channel encoders on INT0/INT1
+ * Sensors: 2x TSINY-8370 dual-channel (quadrature) Hall encoders.
+ *          Channel A drives the count interrupt; channel B is sampled
+ *          on A's rising edge to give the TRUE rotation direction —
+ *          counts are hardware-signed, not inferred from the command.
  *
- * Wiring:
+ * Wiring (TSINY colours: yellow=A, white=B, blue=Vcc, green=GND,
+ *         red/black = motor power -> DRV8871 MOTOR terminals only):
  *   D5  (PWM) -> LEFT  board IN1  (forward)
  *   D6  (PWM) -> LEFT  board IN2  (reverse)
  *   D9  (PWM) -> RIGHT board IN1  (forward)
  *   D10 (PWM) -> RIGHT board IN2  (reverse)
- *   D2        <- LEFT  encoder signal   (INPUT_PULLUP, RISING)
- *   D3        <- RIGHT encoder signal   (INPUT_PULLUP, RISING)
+ *   D2        <- LEFT  encoder A (yellow)  INPUT_PULLUP, RISING int
+ *   D4        <- LEFT  encoder B (white)   INPUT_PULLUP, sampled
+ *   D3        <- RIGHT encoder A (yellow)  INPUT_PULLUP, RISING int
+ *   D7        <- RIGHT encoder B (white)   INPUT_PULLUP, sampled
+ *   5V / GND  -> both encoders' blue / green (NOT the 9 V rail — the
+ *                encoders' internal 10k pull-up ties Vout to Vcc, so
+ *                Vcc must equal the Arduino's logic voltage)
  *   Buck OUT+ (8-9 V)      -> each DRV8871 POWER+ (VM)
  *   Star point (buck OUT-) -> each DRV8871 POWER- and Arduino GND,
  *                             each on its OWN wire (no ground ring)
@@ -69,8 +78,19 @@ void resetFlagsInit(void) {
 #define IN2_L  6     // Left  motor reverse (PWM)
 #define IN1_R  9     // Right motor forward (PWM)
 #define IN2_R  10    // Right motor reverse (PWM)
-#define ENC_L  2     // Left  encoder (INT0)
-#define ENC_R  3     // Right encoder (INT1)
+#define ENC_L    2   // Left  encoder channel A (INT0)
+#define ENC_R    3   // Right encoder channel A (INT1)
+#define ENC_L_B  4   // Left  encoder channel B (sampled in ISR)
+#define ENC_R_B  7   // Right encoder channel B (sampled in ISR)
+
+// Per-side quadrature polarity.  The two motors are mirror-mounted, so
+// one side usually needs inverting.  CALIBRATE after flashing: hand-roll
+// each wheel in the robot's FORWARD direction and watch the counts
+// (tests/test_encoders.py or the notebook's hand-spin cell).  Forward
+// roll must count UP on both sides; if a side counts down, flip its
+// invert to 1 and re-flash.
+#define ENC_L_INVERT  0
+#define ENC_R_INVERT  0
 
 // --------------------------- Tunables --------------------------- //
 #define PWM_MAX            255
@@ -104,8 +124,16 @@ void resetFlagsInit(void) {
 #define ABSURD_COUNT       100000L
 
 // ------------------------ Encoder state ------------------------- //
-// Single-channel encoders cannot sense direction; each wheel gets the
-// sign of its own commanded rotation (wheels counter-rotate in turns).
+// Quadrature: the ISR fires on channel A's rising edge and samples
+// channel B, whose level at that instant encodes the TRUE rotation
+// direction.  Counts are therefore hardware-signed:
+//   * wrong-way motion (rolling back on a slope, overshoot during
+//     braking) is measured, not miscounted as forward progress;
+//   * a wheel dithering on an edge while stopped nets to ZERO
+//     (+1/-1 alternate) instead of accumulating phantom travel.
+// enc_dir_l/r hold each wheel's COMMANDED sign — no longer used for
+// counting, only to convert signed counts into progress-along-command
+// in the control loop.
 volatile long enc_left  = 0;
 volatile long enc_right = 0;
 volatile int8_t enc_dir_l = 1;
@@ -119,15 +147,21 @@ void isr_left() {
   unsigned long now = micros();
   if (now - last_left_us < MIN_PULSE_US) return;
   last_left_us = now;
-  // Step forced to exactly +/-1: if the dir variable is ever corrupted
-  // in RAM, a bare "+= dir" would inject garbage on EVERY edge.
-  enc_left += (enc_dir_l >= 0) ? 1 : -1;
+  int8_t step = digitalRead(ENC_L_B) ? -1 : 1;   // B level = direction
+#if ENC_L_INVERT
+  step = -step;
+#endif
+  enc_left += step;
 }
 void isr_right() {
   unsigned long now = micros();
   if (now - last_right_us < MIN_PULSE_US) return;
   last_right_us = now;
-  enc_right += (enc_dir_r >= 0) ? 1 : -1;
+  int8_t step = digitalRead(ENC_R_B) ? -1 : 1;
+#if ENC_R_INVERT
+  step = -step;
+#endif
+  enc_right += step;
 }
 
 // ------------------------- Motion state ------------------------- //
@@ -504,8 +538,10 @@ void setup() {
   pinMode(IN2_L, OUTPUT);
   pinMode(IN1_R, OUTPUT);
   pinMode(IN2_R, OUTPUT);
-  pinMode(ENC_L, INPUT_PULLUP);
-  pinMode(ENC_R, INPUT_PULLUP);
+  pinMode(ENC_L,   INPUT_PULLUP);
+  pinMode(ENC_R,   INPUT_PULLUP);
+  pinMode(ENC_L_B, INPUT_PULLUP);
+  pinMode(ENC_R_B, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(ENC_L), isr_left,  RISING);
   attachInterrupt(digitalPinToInterrupt(ENC_R), isr_right, RISING);
 
@@ -515,7 +551,7 @@ void setup() {
   // Reset cause + build stamp.  __DATE__/__TIME__ come from the compiler,
   // so every fresh build announces itself — a stale flash can never
   // masquerade as current source.
-  sendf("B,%X,drv8871-v3 built " __DATE__ " " __TIME__, cause);
+  sendf("B,%X,drv8871-v4-quad built " __DATE__ " " __TIME__, cause);
   last_rx_ms = millis();
 }
 
@@ -634,8 +670,8 @@ void loop() {
 
     long pl = el * (long)enc_dir_l;
     long pr = er * (long)enc_dir_r;
-    if (pl < 0) pl = 0;                          // backwards = noise, not travel
-    if (pr < 0) pr = 0;
+    if (pl < 0) pl = 0;      // net motion AGAINST the command (real, thanks
+    if (pr < 0) pr = 0;      // to quadrature) counts as zero progress
 
     // Runaway detection: one channel wildly ahead of the other.
     // Completion uses min() of both wheels, so a noisy channel can
@@ -659,10 +695,11 @@ void loop() {
       if (noise_strikes > MAX_NOISE_STRIKES) {
         finishMove("NOISE");
       } else {
-        // Noise only ever ADDS counts: trust the SMALLER reading and
-        // snap only the corrupted channel to it.  Re-assert direction
-        // signs too — they sit next to the counters in RAM and a
-        // corrupted sign silently re-poisons every later count.
+        // With quadrature, EMI bursts random-walk rather than inflate,
+        // so gross inflation on one channel still marks it as the liar:
+        // trust the SMALLER progress and snap only the corrupted
+        // channel to it.  Re-assert the commanded signs too — they sit
+        // next to the counters in RAM and share their corruption risk.
         long good = (pl < pr) ? pl : pr;
         int8_t ls, rs;
         wheelSigns(current_dir, ls, rs);

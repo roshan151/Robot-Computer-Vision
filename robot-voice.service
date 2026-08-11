@@ -1,0 +1,39 @@
+# systemd unit: start voice-only robot control at Raspberry Pi boot.
+#
+# Install (on the Pi, from the repo directory):
+#   1. Put secrets where the service can read them:
+#        echo 'OPENAI_API_KEY=sk-...' | sudo tee /etc/robot.env
+#        sudo chmod 600 /etc/robot.env
+#   2. Fix the two paths below if your repo is not at
+#      /home/pi/Robot-Computer-Vision or your user is not 'pi'.
+#   3. Install + enable:
+#        sudo cp robot-voice.service /etc/systemd/system/
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now robot-voice.service
+#
+# Watch it:      journalctl -u robot-voice -f
+# Stop it:       sudo systemctl stop robot-voice
+# Disable boot:  sudo systemctl disable robot-voice
+
+[Unit]
+Description=Robot voice-only control (voice + GPT, no camera)
+# Voice needs the network (GPT API) and sound devices.
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/Robot-Computer-Vision
+EnvironmentFile=-/etc/robot.env
+ExecStart=/home/pi/Robot-Computer-Vision/start_voice_only.sh
+# If the process dies (serial hiccup, API error), restart after 3 s.
+# The firmware's link watchdog brakes the motors the moment the host
+# process disappears, so a restart gap is safe.
+Restart=on-failure
+RestartSec=3
+# Give the stop path time to send its S command before SIGKILL.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

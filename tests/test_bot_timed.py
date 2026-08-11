@@ -129,7 +129,7 @@ def main() -> None:
     faults = FaultCounter()
     logging.getLogger().addHandler(faults)
 
-    from drivetrain_client import SerialDrivetrain
+    from drivetrain import SerialDrivetrain
 
     print(f"Connecting on {args.port} @ {args.baud} baud …")
     try:

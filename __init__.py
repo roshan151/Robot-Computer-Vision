@@ -1,5 +1,5 @@
-from arduino_bridge import ArduinoBridge
-from drivetrain_client import SerialDrivetrain
+from drivetrain import ArduinoBridge
+from drivetrain import SerialDrivetrain
 from movement_adapter import ArduinoMovement, MovementHistory
 from vision_client import RobotVision
 

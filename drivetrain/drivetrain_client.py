@@ -1,6 +1,5 @@
 """
 Intent-level drivetrain API on the Raspberry Pi — v3.
-
 Key changes vs v2:
   - Public straight/reverse API now takes METERS, not duration seconds.
     Internally converted to encoder ticks via config.TICKS_PER_CM so the
@@ -11,7 +10,6 @@ Key changes vs v2:
     warnings for stalled wheels or excessive sync error.
   - Calibration constants (TICKS_PER_CM, TICKS_PER_DEGREE) live in config.py
     so they can be tuned via environment variables without touching code.
-  - set_base_speed_percent() added for compatibility with brain_loop.py.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import threading
 import time
 from typing import Any, Dict
 
-from arduino_bridge import ArduinoBridge
+from .arduino_bridge import ArduinoBridge
 import config
 
 logger = logging.getLogger(__name__)

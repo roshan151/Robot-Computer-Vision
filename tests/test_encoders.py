@@ -11,9 +11,9 @@ Connect, then spin each wheel BY HAND and watch the live counts:
      a burst of counts = intermittent contact / noise pickup.
 
 Notes:
-  * These are single-channel encoders: they can't tell direction.  The
-    sign shown is whatever the firmware last used — ignore it here, only
-    the RATE and WHICH channel moves matter.
+  * Quadrature (fw v4+): counts are hardware-signed.  Rolling a wheel
+    in the robot's FORWARD direction must count UP; if a side counts
+    down, flip its ENC_x_INVERT in drivetrain.ino and re-flash.
   * A slow steady hand-spin should produce a smooth, proportional count
     (~2 counts per degree-ish depending on your CPR).  Jumps of hundreds
     of ticks from one 100 ms report to the next are noise.
@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from arduino_bridge import ArduinoBridge
+from drivetrain import ArduinoBridge
 
 # Flag any jump bigger than this between two 100 ms telemetry reports.
 # A wheel hand-spun fast is well under this; noise bursts are way over.

@@ -16,7 +16,7 @@ from typing import Any, List, Optional, Tuple
 from prompts_and_glossary import commands as glossary_commands
 
 import config
-from drivetrain_client import SerialDrivetrain
+from drivetrain import SerialDrivetrain
 from movement_context import MovementContext
 
 logger = logging.getLogger(__name__)

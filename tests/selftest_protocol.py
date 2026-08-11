@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from serial_protocol import (
+from drivetrain.serial_protocol import (
     FrameParser,
     checksum,
     describe_reset,

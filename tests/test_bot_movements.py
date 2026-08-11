@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 
 if TYPE_CHECKING:
-    from drivetrain_client import SerialDrivetrain
+    from drivetrain import SerialDrivetrain
 
 # Each step is (name, value) where value is metres for straight/reverse
 # and degrees for left/right (0 = use --turn-angle default).
@@ -202,7 +202,7 @@ def main() -> None:
     args = parse_args()
     repeat = max(1, args.repeat)
 
-    from drivetrain_client import SerialDrivetrain
+    from drivetrain import SerialDrivetrain
 
     print(f"Connecting on {args.port} @ {args.baud} baud …")
     try:

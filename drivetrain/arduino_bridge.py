@@ -39,7 +39,7 @@ from typing import Callable, Optional
 import serial  # pyserial
 
 import config
-from serial_protocol import (
+from .serial_protocol import (
     FrameParser,
     Message,
     MOVE_FAIL_TEXT,
