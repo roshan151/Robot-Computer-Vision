@@ -37,13 +37,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-import config
 import robot_log
-from movement_adapter import ArduinoMovement, MovementHistory
+from movement_adapter import ArduinoMovement
 
 logger = logging.getLogger(__name__)
 
-# Executor-level op names -> ArduinoMovement methods.
+# The ONLY op -> method map in the tree. This used to exist three times over
+# (here, in gestures, and in a glossary module) and they drifted.
 OPS = {
     "straight": "straight",
     "forward": "straight",
@@ -90,13 +90,8 @@ class MotionEvent:
 class MotionExecutor:
     """Single-threaded owner of the drivetrain, with pre-emptive cancellation."""
 
-    def __init__(
-        self,
-        move: ArduinoMovement,
-        history: Optional[MovementHistory] = None,
-    ) -> None:
+    def __init__(self, move: ArduinoMovement) -> None:
         self._move = move
-        self._history = history
 
         self._q: "queue.Queue[Optional[MotionJob]]" = queue.Queue()
         self._events: "queue.Queue[MotionEvent]" = queue.Queue()
@@ -293,16 +288,6 @@ class MotionExecutor:
         ))
 
     def _dispatch(self, job: MotionJob) -> None:
-        """Run one move.
-
-        Gesture jobs deliberately bypass MovementHistory. The history stack
-        drives `origin()` / backtracking; if conversational nods and shakes were
-        pushed onto it, "return to origin" would replay the entire conversation
-        backwards.
-        """
-        if self._history is not None and not job.gesture:
-            self._history.apply_voice_word(job.op, job.value)
-            return
         getattr(self._move, OPS[job.op])(job.value)
 
     _EVT = {DONE: "move.done", CANCELLED: "move.cancelled", FAILED: "move.failed"}

@@ -1,19 +1,15 @@
 """
-Movement API used by voice / planner — drives Arduino via SerialDrivetrain.
-Method names match `prompts_and_glossary.commands['movement'][*]['command']`.
+Movement API over the Arduino drivetrain.
 
-v2 → v3 changes:
-  - straight() and reverse() now call straight_m() / reverse_m() directly.
-    The old duration→ticks approximation is gone; distance is encoder-exact.
-  - meters_per_second parameter removed (no longer needed).
+Thin by design: it names the four things the robot can do, tracks the moving
+flag for the vision guardian, and exposes the out-of-band brake. Sequencing,
+queueing and cancellation all live in MotionExecutor.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional, Tuple
-
-from prompts_and_glossary import commands as glossary_commands
+from typing import Any, Optional
 
 import config
 from drivetrain import SerialDrivetrain
@@ -23,10 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class ArduinoMovement:
-    """
-    Voice-compatible surface: straight, reverse, left, right, stop.
-    Optional MovementContext updates for vision guardian.
-    """
+    """straight / reverse / left / right, plus two ways to stop."""
 
     def __init__(
         self,
@@ -55,17 +48,15 @@ class ArduinoMovement:
                 self._ctx.set_moving(False)
 
     def straight(self, meters: Any = None) -> None:
-        """Drive forward `meters` metres using encoder-counted movement."""
-        m = float(meters) if meters is not None else config.DEFAULT_MOVE_METERS
-        m = abs(m)
-        logger.info("straight %.3f m (encoder-counted)", m)
+        """Drive forward `meters` metres, encoder-counted. Blocks."""
+        m = abs(float(meters)) if meters is not None else config.DEFAULT_MOVE_METERS
+        logger.info("straight %.3f m", m)
         self._wrap_moving(self._dt.straight_m, meters=m)
 
     def reverse(self, meters: Any = None) -> None:
-        """Drive backward `meters` metres using encoder-counted movement."""
-        m = float(meters) if meters is not None else config.DEFAULT_MOVE_METERS
-        m = abs(m)
-        logger.info("reverse %.3f m (encoder-counted)", m)
+        """Drive backward `meters` metres, encoder-counted. Blocks."""
+        m = abs(float(meters)) if meters is not None else config.DEFAULT_MOVE_METERS
+        logger.info("reverse %.3f m", m)
         self._wrap_moving(self._dt.reverse_m, meters=m)
 
     def left(self, angle: Any = None) -> None:
@@ -81,65 +72,23 @@ class ArduinoMovement:
     def stop(self, _unused: Any = None) -> None:
         """Graceful stop.
 
-        WARNING: this blocks behind any in-flight encoder-counted move — the
-        bridge holds _cmd_lock for the whole move.  Calling it from a second
-        thread to halt a move in progress does not work; the S arrives after
-        the move has already completed.  Use emergency_stop() for that.
+        WARNING: blocks behind any in-flight encoder-counted move — the bridge
+        holds _cmd_lock for the whole move, so this arrives only after the move
+        it was meant to interrupt has finished. Use emergency_stop() to
+        actually interrupt one.
         """
         logger.info("stop")
         self._dt.stop()
 
     def emergency_stop(self) -> None:
-        """Halt a move already in progress. Safe to call from any thread.
+        """Halt a move already in progress. Safe from any thread.
 
-        Deliberately does not log — every caller already emits an `estop`
-        event with the reason attached, and the reason is the useful half.
+        Writes the S frame out of band, bypassing the command lock the running
+        move is holding. This is the only stop that works mid-move.
+
+        Deliberately does not log — every caller already emits an `estop` event
+        with the reason attached, and the reason is the useful half.
         """
         self._dt.emergency_stop()
         if self._ctx:
             self._ctx.set_moving(False)
-
-
-class MovementHistory:
-    """Tracks voice movement steps for origin / backtrack."""
-
-    def __init__(self, move: ArduinoMovement) -> None:
-        self._move = move
-        self._stack: List[Tuple[str, Any]] = []
-
-    @property
-    def stack(self) -> List[Tuple[str, Any]]:
-        return list(self._stack)
-
-    def clear(self) -> None:
-        self._stack.clear()
-
-    def apply_voice_word(self, word: str, value: Any) -> None:
-        meta = glossary_commands["movement"].get(word)
-        if not meta:
-            raise ValueError(f"unknown movement token: {word}")
-        cmd = meta["command"]
-        method = getattr(self._move, cmd)
-        if cmd == "stop":
-            method()
-            return
-        method(value)
-        self._stack.append((word, value))
-
-    def origin(self, steps: Any) -> None:
-        n = int(steps) if steps is not None else -1
-        if n == -1:
-            while self._stack:
-                self._undo_one()
-        else:
-            for _ in range(min(n, len(self._stack))):
-                self._undo_one()
-
-    def _undo_one(self) -> None:
-        if not self._stack:
-            return
-        word, value = self._stack.pop()
-        comp = glossary_commands["movement"][word]["complement"]
-        if comp is None:
-            return
-        getattr(self._move, comp)(value)

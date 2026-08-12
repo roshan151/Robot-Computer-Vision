@@ -76,21 +76,13 @@ EVENTS = {
     # power
     "battery",           # percent / volts at startup
     "battery.say",       # spoken battery report
-    # hardware
-    "link.up",
-    "link.down",
-    "link.reset",         # Arduino rebooted under us
-    "encoder.warn",       # stall / sync / coverage
     # voice
-    "voice.calibrate",   # ambient noise floor measured (once per session)
-    "voice.heard",       # a command was transcribed
-    "voice.unclear",     # audio arrived but could not be transcribed
-    "voice.idle",        # listen window elapsed with no speech - NOT a fault
-    "voice.say",         # what the robot would have said, had it a voice
-    "voice.connect",     # live session established     # planner backend selected
-    "voice.drop",
-    "voice.tool",
-    "audio.error",
+    "voice.connect",     # live session established
+    "voice.drop",        # session died, with the cause
+    "voice.heard",       # transcript of what the operator said
+    "voice.say",         # what the model said (never played aloud)
+    "voice.tool",        # a tool call and its result
+    "audio.error",       # microphone, uplink or playback trouble
 }
 
 _LEVEL_NAME = {
@@ -210,14 +202,16 @@ class _FileFilter(logging.Filter):
 def setup(
     path: Optional[str] = None,
     console_level: int = logging.INFO,
-    max_bytes: int = 2_000_000,
-    backups: int = 3,
+    max_bytes: Optional[int] = None,
+    backups: Optional[int] = None,
 ) -> Path:
     """Configure logging. Safe to call twice; the second call is a no-op."""
     if _state["handler"] is not None:
         return _state["path"]
 
-    log_path = Path(path or getattr(config, "LOG_PATH", "logs.json")).expanduser()
+    log_path = Path(path or config.LOG_PATH).expanduser()
+    max_bytes = config.LOG_MAX_BYTES if max_bytes is None else max_bytes
+    backups = config.LOG_BACKUPS if backups is None else backups
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     # StreamHandler.emit() flushes after every record, so anything already

@@ -1,33 +1,38 @@
 """
 The robot's functions, as Gemini Live tools.
 
-The turn-based planner asked the model for a JSON plan and then interpreted it.
-The Live agent instead gives the model the robot's actual capabilities and lets
-it call them. The schema is no longer a contract we parse — it is the function
-signature itself.
+Every tool returns IMMEDIATELY
+------------------------------
+This is the load-bearing property, and it is a correctness requirement rather
+than a nicety.
 
-Concurrency
------------
-The Live session runs on an asyncio event loop; the drivetrain is blocking and
-speaks over a serial link. Every move therefore runs in a worker thread, so a
-two-second drive cannot stall the audio stream — if it did, the microphone
-would stop feeding the model mid-command.
+Tool calls are dispatched from inside `async for response in session.receive()`.
+Awaiting a 1.4 s drive inside that loop stops the websocket being read for 1.4 s.
+The receive side stops draining, back-pressure reaches the send side, the
+microphone uplink stalls, audio starts being dropped, and the session dies —
+which is exactly the failure we saw: two turns, `audio.error stage=mic-queue`,
+then `voice.drop`, then a reconnect that survives one more command.
 
-`stop` is the exception, deliberately. It runs inline on the event loop and
-uses the out-of-band emergency path, because a stop that queues behind the move
-it is meant to interrupt is not a stop. Everything else can wait; this cannot.
+So no tool blocks. Moves are queued on a MotionExecutor — a FIFO worker thread
+that owns the drivetrain — and the tool answers "queued" straight away. The
+event loop is then free to keep reading the socket and pumping the microphone,
+which is what "always listening" actually requires.
+
+`stop` is the exception, deliberately: it runs inline, empties the queue, and
+fires the out-of-band brake. A stop that waits its turn behind the moves it is
+meant to cancel is not a stop.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import config
 import robot_log
-from gestures import SyncGesturer
-from movement_adapter import ArduinoMovement, MovementHistory
+from gestures import Gesturer
+from motion_executor import MotionExecutor
+from movement_adapter import ArduinoMovement
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +58,9 @@ def declarations() -> list:
         types.FunctionDeclaration(
             name="drive",
             description=(
-                "Drive the robot straight. Positive metres go forward, "
-                "negative go backward. Use this for any forward/back movement."
+                "Queue a straight move. Positive metres go forward, negative "
+                "go backward. Returns as soon as the move is queued, not when "
+                "it finishes — you can keep listening and queue more."
             ),
             parameters=schema(meters={
                 "type": "NUMBER",
@@ -65,8 +71,8 @@ def declarations() -> list:
         types.FunctionDeclaration(
             name="turn",
             description=(
-                "Turn the robot on the spot. Positive degrees turn RIGHT, "
-                "negative turn LEFT."
+                "Queue a turn on the spot. Positive degrees turn RIGHT, "
+                "negative turn LEFT. Returns as soon as it is queued."
             ),
             parameters=schema(degrees={
                 "type": "NUMBER",
@@ -77,9 +83,10 @@ def declarations() -> list:
         types.FunctionDeclaration(
             name="stop",
             description=(
-                "Stop all motion immediately, interrupting any move in "
-                "progress. Call this the instant the operator says stop, and "
-                "whenever you are unsure whether it is safe to keep moving."
+                "Stop immediately: cancels everything queued AND interrupts "
+                "the move in progress. Call this the instant the operator says "
+                "stop, and whenever you are unsure whether it is safe to keep "
+                "moving."
             ),
             parameters=schema(),
         ),
@@ -100,33 +107,32 @@ def declarations() -> list:
 
 
 class RobotTools:
-    """Executes the model's tool calls against the real drivetrain."""
+    """Executes the model's tool calls. Nothing here ever blocks the loop."""
 
-    def __init__(
-        self,
-        move: ArduinoMovement,
-        history: Optional[MovementHistory] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-    ) -> None:
+    def __init__(self, move: ArduinoMovement) -> None:
         self._move = move
-        self._history = history
-        self._gestures = SyncGesturer(move)
-        self._loop = loop
-        # One at a time: the serial link has a single command lock, and two
-        # concurrent moves would simply queue anyway — but queued behind a
-        # lock the stop path also needs.
-        self._motion = asyncio.Semaphore(1)
-        self._busy = False
+        # FIFO, single worker thread, sole owner of the serial link. submit()
+        # returns a job id without waiting, cancel_all() empties the queue and
+        # brakes whatever is already running.
+        self._exec = MotionExecutor(move).start()
+        self._gestures = Gesturer(self._exec)
+
+    def close(self) -> None:
+        self._exec.close()
 
     @property
-    def busy(self) -> bool:
-        return self._busy
+    def executor(self) -> MotionExecutor:
+        return self._exec
 
     # ------------------------------------------------------------------ #
 
     async def dispatch(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Run one tool call. Never raises — a tool error is a result."""
-        handler: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = {
+        """Run one tool call. Never raises — a tool error is a result.
+
+        Not actually async work: every handler is synchronous and fast. The
+        coroutine signature is kept so the caller can await it uniformly.
+        """
+        handler: Optional[Callable[..., Dict[str, Any]]] = {
             "drive": self._drive,
             "turn": self._turn,
             "stop": self._stop,
@@ -139,11 +145,10 @@ class RobotTools:
             return {"ok": False, "error": f"unknown tool {name!r}"}
 
         try:
-            result = await handler(**args)
+            result = handler(**args)
             robot_log.event("voice.tool", name=name, args=args, **result)
             return result
         except TypeError as e:
-            # Wrong or missing arguments from the model.
             robot_log.event("voice.tool", logging.WARNING, name=name,
                             args=args, ok=False, err=str(e))
             return {"ok": False, "error": f"bad arguments: {e}"}
@@ -154,20 +159,12 @@ class RobotTools:
 
     # ------------------------------------------------------------------ #
 
-    async def _run_blocking(self, fn, *args) -> None:
-        """Move the blocking serial call off the event loop.
+    def _queued(self, job_id: int, **extra: Any) -> Dict[str, Any]:
+        st = self._exec.status()
+        return {"ok": True, "queued": job_id,
+                "queue_depth": st["queue_depth"], **extra}
 
-        Without this a 2 s drive would stop the microphone task from running,
-        and the model would simply stop hearing the operator mid-command.
-        """
-        async with self._motion:
-            self._busy = True
-            try:
-                await asyncio.to_thread(fn, *args)
-            finally:
-                self._busy = False
-
-    async def _drive(self, meters: float) -> Dict[str, Any]:
+    def _drive(self, meters: float) -> Dict[str, Any]:
         m = float(meters)
         if abs(m) > config.MAX_DRIVE_METERS:
             # Clamped here rather than in the prompt: a limit the model can
@@ -178,39 +175,35 @@ class RobotTools:
         if abs(m) < 1e-3:
             return {"ok": True, "note": "zero distance, nothing to do"}
 
-        fn = self._move.straight if m > 0 else self._move.reverse
-        await self._run_blocking(fn, abs(m))
-        if self._history is not None:
-            self._history._stack.append(
-                ("straight" if m > 0 else "reverse", abs(m)))
-        return {"ok": True, "moved_m": m}
+        op = "straight" if m > 0 else "reverse"
+        return self._queued(self._exec.submit(op, abs(m)), meters=m)
 
-    async def _turn(self, degrees: float) -> Dict[str, Any]:
+    def _turn(self, degrees: float) -> Dict[str, Any]:
         d = float(degrees)
         if abs(d) < 0.5:
             return {"ok": True, "note": "zero angle, nothing to do"}
-        fn = self._move.right if d > 0 else self._move.left
-        await self._run_blocking(fn, abs(d))
-        if self._history is not None:
-            self._history._stack.append(("right" if d > 0 else "left", abs(d)))
-        return {"ok": True, "turned_deg": d}
+        op = "right" if d > 0 else "left"
+        return self._queued(self._exec.submit(op, abs(d)), degrees=d)
 
-    async def _stop(self) -> Dict[str, Any]:
-        """Inline and out of band — see the module docstring.
+    def _stop(self) -> Dict[str, Any]:
+        """Empty the queue and interrupt the move already running.
 
-        This does NOT take the motion semaphore and does NOT go to a worker
-        thread. Both would make it wait for the move it exists to interrupt.
+        Inline and out of band. cancel_all() clears every pending job, sets the
+        cancel flag, and writes the S frame straight to the serial port —
+        bypassing the command lock that the running move is holding. Anything
+        that waited its turn here would arrive after the move it was meant to
+        cancel had already finished.
         """
-        self._move.emergency_stop()
-        robot_log.event("estop", logging.WARNING, reason="voice: stop tool")
-        return {"ok": True, "stopped": True}
+        dropped = self._exec.cancel_all("voice: stop")
+        return {"ok": True, "stopped": True, "cancelled": dropped}
 
-    async def _answer(self, value: str) -> Dict[str, Any]:
+    def _answer(self, value: str) -> Dict[str, Any]:
         v = str(value).lower().strip()
         if v not in ("yes", "no", "unclear"):
             return {"ok": False, "error": f"unknown answer {value!r}"}
-        if self._busy:
-            # Motion is both the actuator and the display; the actuator wins.
-            return {"ok": True, "gestured": False, "note": "busy driving"}
-        await asyncio.to_thread(self._gestures.play, v)
-        return {"ok": True, "gestured": True, "value": v}
+        # Gesturer drops the gesture if the robot is already moving: motion is
+        # both the actuator and the display, and the actuator wins.
+        jobs = self._gestures.play(v)
+        if jobs is None:
+            return {"ok": True, "gestured": False, "note": "busy moving"}
+        return {"ok": True, "gestured": True, "value": v, "jobs": jobs}

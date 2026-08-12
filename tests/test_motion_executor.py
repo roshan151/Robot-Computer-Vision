@@ -53,19 +53,6 @@ class FakeMovement:
         self._brake.set()
 
 
-class FakeHistory:
-    """Mirrors MovementHistory: it *executes* the move, then records it."""
-
-    def __init__(self, move: FakeMovement) -> None:
-        self._move = move
-        self.stack: list[tuple[str, float]] = []
-
-    def apply_voice_word(self, word: str, value) -> None:
-        getattr(self._move, {"straight": "straight", "forward": "straight",
-                             "reverse": "reverse", "left": "left",
-                             "right": "right"}[word])(value)
-        self.stack.append((word, value))
-
 
 def _drain_events(ex: MotionExecutor) -> list:
     out = []
@@ -78,7 +65,7 @@ def _drain_events(ex: MotionExecutor) -> list:
 
 def test_submit_is_non_blocking() -> None:
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         t0 = time.monotonic()
         ex.submit("straight", 3.0)
         assert time.monotonic() - t0 < 0.05, "submit() blocked"
@@ -88,7 +75,7 @@ def test_submit_is_non_blocking() -> None:
 def test_cancel_interrupts_move_in_flight() -> None:
     """The whole point: a move already running must be stoppable."""
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         ex.submit("straight", 3.0)
         time.sleep(0.10)                       # let the worker start it
         t0 = time.monotonic()
@@ -104,7 +91,7 @@ def test_cancel_interrupts_move_in_flight() -> None:
 
 def test_cancel_drops_queued_jobs() -> None:
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         for _ in range(4):
             ex.submit("straight", 1.0)
         time.sleep(0.05)
@@ -117,7 +104,7 @@ def test_cancel_drops_queued_jobs() -> None:
 
 def test_normal_move_completes() -> None:
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         ex.submit("left", 30)
         assert ex.drain(timeout=2.0)
         ev = _drain_events(ex)
@@ -125,20 +112,12 @@ def test_normal_move_completes() -> None:
         assert move.calls == [("left", 30)]
 
 
-def test_gestures_bypass_history() -> None:
-    """If gestures entered the history stack, origin() would replay the
-    conversation backwards."""
+def test_gesture_reaches_the_drivetrain() -> None:
     move = FakeMovement()
-    hist = FakeHistory(move)
-    with MotionExecutor(move, hist) as ex:
-        g = Gesturer(ex)
-        g.yes()
+    with MotionExecutor(move) as ex:
+        Gesturer(ex).yes()
         assert ex.drain(timeout=3.0)
-        assert hist.stack == [], f"gesture leaked into history: {hist.stack}"
-
-        ex.submit("straight", 1.0)              # a real move DOES record
-        assert ex.drain(timeout=3.0)
-        assert hist.stack == [("straight", 1.0)]
+        assert [c[0] for c in move.calls] == ["straight", "reverse"], move.calls
 
 
 def test_gesture_shapes() -> None:
@@ -151,7 +130,7 @@ def test_gesture_shapes() -> None:
 
 def test_gesture_dropped_not_queued() -> None:
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         g = Gesturer(ex)
         accepted = [g.yes() for _ in range(5)]
         assert sum(a is not None for a in accepted) == 1, \
@@ -161,7 +140,7 @@ def test_gesture_dropped_not_queued() -> None:
 
 def test_gesture_yields_to_real_motion() -> None:
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         g = Gesturer(ex)
         ex.submit("straight", 3.0)
         time.sleep(0.10)
@@ -177,7 +156,7 @@ def test_failure_is_not_reported_as_cancelled() -> None:
         raise RuntimeError("serial exploded")
 
     move.right = boom                                    # type: ignore[assignment]
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         ex.submit("right", 90)
         assert ex.drain(timeout=2.0)
         ev = _drain_events(ex)
@@ -187,7 +166,7 @@ def test_failure_is_not_reported_as_cancelled() -> None:
 
 def test_status_reports_motion() -> None:
     move = FakeMovement()
-    with MotionExecutor(move, FakeHistory(move)) as ex:
+    with MotionExecutor(move) as ex:
         assert ex.status()["moving"] is False
         ex.submit("straight", 3.0)
         time.sleep(0.10)

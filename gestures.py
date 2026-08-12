@@ -14,20 +14,18 @@ Vocabulary
              the same gesture
 
 Thinking has no gesture, by design.  Note the consequence: absence of motion is
-ambiguous between *thinking*, *no*, and *the session is dead*.  Phase 4's phone
-UI heartbeat is what resolves that, and until it exists a silent robot cannot be
-distinguished from a broken one.
+ambiguous between *thinking*, *no*, and *the session is dead* — a silent robot
+cannot be told apart from a broken one without reading logs.json.
 
 Gestures are net-zero on paper and not in practice — wheel slip on three
 consecutive turns accumulates heading error.  That is accepted; this build does
-not depend on odometry.  They are still kept out of MovementHistory so that
-`origin()` never tries to replay a conversation backwards.
+not depend on odometry.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import config
 import robot_log
@@ -55,70 +53,6 @@ VOCABULARY = {
     "no": NO,
     "unclear": UNCLEAR,
 }
-
-# Gesture op -> ArduinoMovement method. "forward" is the planner's word;
-# the drivetrain calls it "straight".
-_MOVE_METHOD = {
-    "straight": "straight",
-    "forward": "straight",
-    "reverse": "reverse",
-    "left": "left",
-    "right": "right",
-}
-
-
-class SyncGesturer:
-    """Plays a gesture on the calling thread, blocking until it finishes.
-
-    For the turn-based voice loop, where a gesture is the robot's entire reply
-    and there is nothing else to do while it plays.
-
-    Safe without the executor because of how that loop is shaped: planner steps
-    already run blocking on the main thread via `_dispatch_step`, and the
-    planner never returns an `answer` and `steps` in the same turn — so a
-    gesture and a movement can never overlap. Same thread, same
-    ArduinoMovement, strictly sequential, no second owner of the serial link.
-
-    Gestures still bypass MovementHistory. `origin()` walks that stack to
-    backtrack; conversational nods in it would make "return to origin" replay
-    the conversation.
-
-    When the MotionExecutor is wired into the session (Phase 2), swap this for
-    `Gesturer` — same `play()` signature, same vocabulary.
-    """
-
-    def __init__(self, move: Any) -> None:
-        self._move = move
-
-    def play(self, name: str) -> bool:
-        key = str(name).lower()
-        steps = VOCABULARY.get(key)
-        if steps is None:
-            raise ValueError(
-                f"unknown gesture {name!r}; expected one of {sorted(VOCABULARY)}"
-            )
-
-        robot_log.event("gesture", name=key, mode="sync", steps=len(steps))
-        for op, value in steps:
-            try:
-                getattr(self._move, _MOVE_METHOD[op])(value)
-            except Exception as e:
-                # A failed gesture must not take the voice loop down with it —
-                # the operator simply gets no answer, which the log explains.
-                robot_log.event("gesture.skip", logging.WARNING, name=key,
-                                why=f"step {op} failed",
-                                err=f"{type(e).__name__}: {e}")
-                return False
-        return True
-
-    def yes(self) -> bool:
-        return self.play("yes")
-
-    def no(self) -> bool:
-        return self.play("no")
-
-    def unclear(self) -> bool:
-        return self.play("unclear")
 
 
 class Gesturer:

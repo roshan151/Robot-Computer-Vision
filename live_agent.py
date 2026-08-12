@@ -187,6 +187,7 @@ class LiveAgent:
             chunk = await self._audio_q.get()
             blob = types.Blob(data=chunk,
                               mime_type=f"audio/pcm;rate={SEND_SAMPLE_RATE}")
+            t0 = time.monotonic()
             # send_realtime_input is the current name; older SDKs used
             # send(input=..., end_of_turn=False). Try the modern one first.
             if hasattr(session, "send_realtime_input"):
@@ -194,11 +195,41 @@ class LiveAgent:
             else:
                 await session.send(input=blob)
 
+            # A single chunk is ~64 ms of audio. If sending one takes longer
+            # than that we are falling behind in real time, and the mic queue
+            # is about to start dropping. Says WHY the uplink stalled, rather
+            # than only that it did.
+            sent_s = time.monotonic() - t0
+            if sent_s > config.LIVE_SEND_WARN_S:
+                robot_log.event_throttled(
+                    "audio.error", key="send-slow", window_s=30.0,
+                    level=logging.WARNING, stage="uplink-send",
+                    err="websocket send is slower than real time",
+                    send_s=round(sent_s, 2), qdepth=self._audio_q.qsize(),
+                )
+
     async def _pump_events(self, session) -> None:
+        last = time.monotonic()
         async for response in session.receive():
+            # How long this loop went without reading the socket. If it grows,
+            # the receive side has stopped draining and back-pressure will
+            # stall the microphone uplink next — that is the failure mode that
+            # killed the session after two commands, so measure it directly
+            # rather than inferring it from the wreckage.
+            gap = time.monotonic() - last
+            if gap > config.LIVE_STALL_WARN_S:
+                robot_log.event_throttled(
+                    "audio.error", key="recv-stall", window_s=30.0,
+                    level=logging.WARNING, stage="receive-loop",
+                    err="event loop did not read the socket",
+                    stalled_s=round(gap, 2),
+                )
+            last = time.monotonic()
+
             calls = self._extract_tool_calls(response)
             if calls:
                 await self._handle_tool_calls(session, calls)
+                last = time.monotonic()
                 continue
 
             # Audio comes back because the model is speech-to-speech, but the
@@ -402,9 +433,9 @@ def _on_failure(tools: RobotTools, agent: LiveAgent, exc: BaseException) -> None
     agent._cues.error()
 
 
-def run_live_agent(move, history=None) -> None:
+def run_live_agent(move) -> None:
     """Blocking entrypoint used by run_robot.py."""
-    tools = RobotTools(move, history)
+    tools = RobotTools(move)
     try:
         asyncio.run(_run_supervised(tools))
     except KeyboardInterrupt:
@@ -414,3 +445,4 @@ def run_live_agent(move, history=None) -> None:
             move.emergency_stop()
         except Exception:
             pass
+        tools.close()          # stops the motion worker thread

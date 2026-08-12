@@ -47,10 +47,6 @@ def _emergency_brake(cause: str) -> None:
                         reason=f"process dying: {cause}",
                         err=f"{type(e).__name__}: {e}")
 
-def pisugar_command(command: str) -> str:
-    """Kept for compatibility — see battery.py for the maintained interface."""
-    import battery
-
     return battery._query(command)
 
 def main() -> None:
@@ -99,16 +95,15 @@ def main() -> None:
 
     global _MOVE
     from live_agent import run_live_agent
-    from movement_adapter import ArduinoMovement, MovementHistory
+    from movement_adapter import ArduinoMovement
     from movement_context import MovementContext
 
     ctx = MovementContext()
     move = ArduinoMovement(ctx=ctx)
     _MOVE = move                      # arms the crash handler's brake
-    history = MovementHistory(move)
 
     try:
-        run_live_agent(move, history)
+        run_live_agent(move)
     except Exception:
         # Re-raised so sys.excepthook logs the cause and brakes; this only
         # exists to make the ordering explicit.
