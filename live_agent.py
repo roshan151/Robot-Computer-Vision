@@ -39,12 +39,33 @@ from robot_tools import RobotTools, declarations
 
 logger = logging.getLogger(__name__)
 
-SEND_SAMPLE_RATE = 16000
+SEND_SAMPLE_RATE = 16000     # uplink: what the Live API expects
+RECV_SAMPLE_RATE = 24000     # downlink: what it returns (only used if played)
 CHUNK_FRAMES = 1024          # ~64 ms at 16 kHz
 
 
 class LiveAgentError(RuntimeError):
     """The Live session could not be established or has failed."""
+
+
+class LiveConfigError(LiveAgentError):
+    """The session was rejected for how it was configured.
+
+    Kept separate from ordinary failures because retrying is pointless and
+    actively harmful: the same config will be refused every time, and each
+    attempt brakes the motors and writes another identical error. One bad
+    setting should produce one clear line, not a log full of them.
+    """
+
+
+def _is_config_rejection(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return (
+        "1007" in text                       # websocket policy violation
+        or "not supported by the model" in text
+        or "invalid_argument" in text
+        or "response modalities" in text
+    )
 
 
 class LiveAgent:
@@ -57,20 +78,40 @@ class LiveAgent:
         self._audio_q: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=64)
         self._stream = None
         self._dropped = 0
+        self._audio_out_bytes = 0
+        self._out = None
 
     # ------------------------------------------------------------------ #
 
     def _config(self) -> Dict[str, Any]:
         from google.genai import types  # type: ignore
 
-        return {
-            # TEXT, not AUDIO. The microphone is open continuously, so a
-            # speaking robot would stream its own voice straight back into the
-            # model. The robot answers by moving; text goes to logs.json.
+        # AUDIO, because the native-audio Live models are speech-to-speech and
+        # reject TEXT outright ("1007 ... response modalities (TEXT) is not
+        # supported by the model").
+        #
+        # The robot is still silent. response_modalities controls what the
+        # model GENERATES, not what we render — and nothing here plays the
+        # returned PCM. It is read off the socket and dropped, so no speaker
+        # ever emits it and the microphone never hears it.
+        #
+        # The transcriptions are what make that free: rather than losing the
+        # model's words, we get them as text for logs.json, plus a transcript
+        # of what it heard the operator say. On a robot with no screen, that
+        # pair is the difference between "it ignored me" and "it misheard me".
+        cfg: Dict[str, Any] = {
             "response_modalities": [config.LIVE_RESPONSE_MODALITY],
             "system_instruction": config.LIVE_SYSTEM_PROMPT,
             "tools": [{"function_declarations": declarations()}],
         }
+        try:
+            cfg["input_audio_transcription"] = types.AudioTranscriptionConfig()
+            cfg["output_audio_transcription"] = types.AudioTranscriptionConfig()
+        except AttributeError:
+            # Older SDK without the config type — the agent still works, the
+            # log is just quieter about what was said.
+            logger.debug("SDK has no AudioTranscriptionConfig; skipping")
+        return cfg
 
     # ------------------------------------------------------------------ #
 
@@ -122,6 +163,13 @@ class LiveAgent:
             )
 
     def _close_microphone(self) -> None:
+        if self._out is not None:
+            try:
+                self._out.stop()
+                self._out.close()
+            except Exception:
+                pass
+            self._out = None
         if self._stream is not None:
             try:
                 self._stream.stop()
@@ -153,11 +201,67 @@ class LiveAgent:
                 await self._handle_tool_calls(session, calls)
                 continue
 
-            text = getattr(response, "text", None)
-            if text:
-                # The model's own words. It has no voice, so this is the only
-                # place they exist.
-                robot_log.event("voice.heard", text=text.strip()[:400])
+            # Audio comes back because the model is speech-to-speech, but the
+            # robot is silent by design: read it off the socket and drop it.
+            # Nothing plays it, so nothing re-enters the microphone.
+            self._drain_audio(response)
+            self._log_transcripts(response)
+
+    def _drain_audio(self, response) -> None:
+        """Discard generated speech. Counted, so 'silent' stays a deliberate
+        choice rather than something we stopped noticing."""
+        data = getattr(response, "data", None)
+        if not data:
+            return
+        self._audio_out_bytes += len(data)
+
+        if config.LIVE_PLAY_AUDIO:
+            # Off by default, and it should stay off: the microphone is open
+            # for the whole session, so anything played here is streamed
+            # straight back to the model as if the operator had said it.
+            self._play(data)
+            return
+
+        robot_log.event_throttled(
+            "voice.say", key="discarded", window_s=300.0,
+            text="(model speech discarded — robot answers by moving)",
+            bytes_dropped=self._audio_out_bytes,
+        )
+
+    def _play(self, pcm: bytes) -> None:
+        try:
+            import numpy as np  # type: ignore
+            import sounddevice as sd  # type: ignore
+
+            if self._out is None:
+                self._out = sd.OutputStream(
+                    samplerate=RECV_SAMPLE_RATE, channels=1, dtype="int16")
+                self._out.start()
+            self._out.write(np.frombuffer(pcm, dtype="<i2"))
+        except Exception as e:
+            robot_log.event_throttled(
+                "audio.error", key="playback", window_s=60.0,
+                level=logging.WARNING, stage="live-playback",
+                err=f"{type(e).__name__}: {e}")
+
+    def _log_transcripts(self, response) -> None:
+        """What the model heard, and what it would have said.
+
+        The only window into the conversation on a robot with no screen.
+        """
+        server = getattr(response, "server_content", None)
+        if server is None:
+            return
+        heard = getattr(server, "input_transcription", None)
+        said = getattr(server, "output_transcription", None)
+
+        text = getattr(heard, "text", None)
+        if text and text.strip():
+            robot_log.event("voice.heard", text=text.strip()[:400])
+
+        text = getattr(said, "text", None)
+        if text and text.strip():
+            robot_log.event("voice.say", text=text.strip()[:400], spoken=False)
 
     @staticmethod
     def _extract_tool_calls(response) -> list:
@@ -211,9 +315,15 @@ class LiveAgent:
 
         client = genai.Client(api_key=config.require("GEMINI_API_KEY"))
 
-        async with client.aio.live.connect(
-            model=self.model, config=self._config()
-        ) as session:
+        try:
+            connection = client.aio.live.connect(
+                model=self.model, config=self._config())
+        except Exception as e:
+            if _is_config_rejection(e):
+                raise LiveConfigError(str(e)) from e
+            raise
+
+        async with connection as session:
             robot_log.event("voice.connect", backend="gemini-live",
                             model=self.model,
                             modality=config.LIVE_RESPONSE_MODALITY)
@@ -259,6 +369,22 @@ async def _run_supervised(tools: RobotTools) -> None:
             raise
         except Exception as e:
             _on_failure(tools, agent, e)
+            if isinstance(e, LiveConfigError) or _is_config_rejection(e):
+                # Retrying a rejected configuration just produces the same
+                # error forever, braking the motors on every attempt. Say what
+                # is wrong once, in terms that name the fix, and stop.
+                robot_log.event(
+                    "fatal", logging.CRITICAL,
+                    cause="live session configuration rejected",
+                    model=agent.model,
+                    modality=config.LIVE_RESPONSE_MODALITY,
+                    err=str(e)[:300],
+                    fix=("native-audio Live models are speech-to-speech and "
+                         "only accept AUDIO. Set ROBOT_LIVE_MODALITY=AUDIO — "
+                         "the robot stays silent because the returned audio is "
+                         "discarded, not played."),
+                )
+                raise
 
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, config.LIVE_RECONNECT_MAX_S)

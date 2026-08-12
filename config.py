@@ -163,10 +163,20 @@ AUDIO_CUE_GUARD_S = float(os.environ.get("ROBOT_AUDIO_CUE_GUARD_S", "0.15"))
 # no ambient calibration — those existed to decide when to spend a request,
 # and a streaming session has no discrete requests to spend.
 
-# TEXT, not AUDIO. The microphone is open for the whole session, so a speaking
-# robot streams its own voice back into the model. The robot answers by moving.
-# Switching this to "AUDIO" is one line, but read audio_cues.py first.
-LIVE_RESPONSE_MODALITY = os.environ.get("ROBOT_LIVE_MODALITY", "TEXT").upper()
+# AUDIO is the only value the native-audio Live models accept — they are
+# speech-to-speech and reject TEXT with "1007 ... response modalities (TEXT)
+# is not supported by the model".
+#
+# The robot is silent anyway. This controls what the model GENERATES, not what
+# gets played: live_agent reads the returned PCM off the socket and drops it,
+# so no speaker emits it and the open microphone never hears it. The model's
+# words still reach logs.json via output_audio_transcription.
+LIVE_RESPONSE_MODALITY = os.environ.get("ROBOT_LIVE_MODALITY", "AUDIO").upper()
+
+# Play the model's speech instead of discarding it. Off by design: the session
+# holds the microphone open continuously, so anything played is streamed
+# straight back to the model as if the operator had said it.
+LIVE_PLAY_AUDIO = os.environ.get("ROBOT_LIVE_PLAY_AUDIO", "0") in ("1", "true", "yes")
 
 # Capture device for the uplink; blank means the system default.
 AUDIO_INPUT_DEVICE = os.environ.get("ROBOT_AUDIO_INPUT_DEVICE", "")
