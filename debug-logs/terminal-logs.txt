@@ -1,0 +1,37 @@
+(rbin-env) roshan-tiwari@raspberrypi:~/src/Robot-Computer-Vision $ python3 run_robot.py --voice-only
+INFO  robot: session.start
+INFO  robot: battery
+INFO  robot: battery.say
+INFO  drivetrain.arduino_bridge: Opening serial port /dev/ttyUSB0 @ 115200 baud
+WARNING drivetrain.arduino_bridge: Arduino firmware: drv8871-v4-quad built Aug 11 2026 16:49:14
+INFO  drivetrain.arduino_bridge: Connected on /dev/ttyUSB0 (boot frame received)
+INFO  robot: voice.connect
+INFO  robot: voice.heard
+INFO  movement_adapter: right 90.0 deg
+INFO  robot: voice.tool
+INFO  live_agent: tool turn({'degrees': 90}) -> {'ok': True, 'turned_deg': 90.0} in 1.02s
+INFO  movement_adapter: left 90.0 deg
+INFO  robot: voice.tool
+INFO  live_agent: tool turn({'degrees': -90}) -> {'ok': True, 'turned_deg': -90.0} in 1.41s
+WARNING robot: audio.error
+WARNING drivetrain.arduino_bridge: emergency_stop: out-of-band S sent (seq 240)
+ERROR robot: voice.drop
+INFO  robot: voice.connect
+INFO  robot: voice.heard
+INFO  movement_adapter: right 90.0 deg
+INFO  robot: voice.tool
+INFO  live_agent: tool turn({'degrees': 90}) -> {'ok': True, 'turned_deg': 90.0} in 1.41s
+INFO  movement_adapter: right 90.0 deg
+WARNING drivetrain.drivetrain_client: right(90.0°): high left-right sync error — ΔL=352 ΔR=396 diff=44 (11.1%) — robot likely drifted; consider tuning SYNC_KP/KI in firmware
+INFO  robot: voice.tool
+INFO  live_agent: tool turn({'degrees': 90}) -> {'ok': True, 'turned_deg': 90.0} in 1.16s
+INFO  movement_adapter: left 90.0 deg
+WARNING drivetrain.drivetrain_client: left(90.0°): high left-right sync error — ΔL=342 ΔR=381 diff=39 (10.2%) — robot likely drifted; consider tuning SYNC_KP/KI in firmware
+INFO  robot: voice.tool
+INFO  live_agent: tool turn({'degrees': -90}) -> {'ok': True, 'turned_deg': -90.0} in 1.40s
+INFO  movement_adapter: left 90.0 deg
+INFO  robot: voice.tool
+INFO  live_agent: tool turn({'degrees': -90}) -> {'ok': True, 'turned_deg': -90.0} in 1.16s
+^CWARNING robot: signal
+WARNING drivetrain.arduino_bridge: emergency_stop: out-of-band S sent (seq 241)
+CRITICAL robot: estop

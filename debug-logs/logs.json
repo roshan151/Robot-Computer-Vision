@@ -1,39 +1,26 @@
-{"ts":"2026-08-11T22:20:41.224Z","lvl":"info","evt":"session.start","mode":"voice-only","pid":2659,"port":"/dev/ttyUSB0","speed_pct":70.0,"log":"logs.json"}
-{"ts":"2026-08-11T22:20:41.333Z","lvl":"info","evt":"battery","pct":51.6,"volts":3.6,"charging":true,"low":false}
-{"ts":"2026-08-11T22:20:41.334Z","lvl":"info","evt":"battery.say","text":"Battery 52 percent, 3 point 6 volts, charging","pct":51.6,"volts":3.6,"charging":true}
-{"ts":"2026-08-11T22:20:49.528Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v3 built Aug 10 2026 15:06:25","src":"drivetrain.arduino_bridge"}
-{"ts":"2026-08-11T22:20:51.562Z","lvl":"info","evt":"voice.calibrate","threshold":52.1}
-{"ts":"2026-08-11T22:20:56.300Z","lvl":"info","evt":"voice.noise","reason":"too quiet","dropped_total":1,"dur":1.56,"peak":0.0059,"voiced_s":0.0,"mod":25.6}
-{"ts":"2026-08-11T22:21:06.022Z","lvl":"info","evt":"voice.connect","backend":"gemini","model":"gemini-3.6-flash","surface":"interactions"}
-{"ts":"2026-08-11T22:21:18.108Z","lvl":"info","evt":"voice.heard","text":"then turn left","answer":"none","steps":1,"rtt_s":19.26,"audio_kb":40.7}
-{"ts":"2026-08-11T22:21:19.471Z","lvl":"warn","evt":"log","msg":"left(90.0\u00b0): high left-right sync error \u2014 \u0394L=577 \u0394R=345 diff=232 (40.2%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:21:41.348Z","lvl":"info","evt":"voice.heard","text":"go straight for a meter","answer":"none","steps":1,"rtt_s":13.31,"audio_kb":76.2}
-{"ts":"2026-08-11T22:21:46.772Z","lvl":"warn","evt":"log","msg":"straight_m(1.000m): high left-right sync error \u2014 \u0394L=2953 \u0394R=2545 diff=408 (13.8%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:22:04.922Z","lvl":"info","evt":"voice.heard","text":"reverse for a meter","answer":"none","steps":1,"rtt_s":8.73,"audio_kb":68.3}
-{"ts":"2026-08-11T22:22:10.354Z","lvl":"warn","evt":"log","msg":"reverse_m(1.000m): high left-right sync error \u2014 \u0394L=3220 \u0394R=2573 diff=647 (20.1%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:22:21.397Z","lvl":"info","evt":"voice.noise","reason":"too quiet","dropped_total":3,"dur":4.27,"peak":0.0003,"voiced_s":0.0,"mod":2.2,"repeats":1}
-{"ts":"2026-08-11T22:22:37.823Z","lvl":"warn","evt":"voice.unclear","stage":"plan","err":"InternalServerError: Error code: 500 - {'error': {'message': 'Internal error encountered.', 'code': 'api_error'}}","audio_kb":65.3}
-{"ts":"2026-08-11T22:22:54.901Z","lvl":"info","evt":"voice.heard","text":"reverse for a meter","answer":"none","steps":1,"rtt_s":4.97,"audio_kb":63.9}
-{"ts":"2026-08-11T22:22:59.930Z","lvl":"warn","evt":"log","msg":"reverse_m(1.000m): high left-right sync error \u2014 \u0394L=3144 \u0394R=2537 diff=607 (19.3%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:23:13.022Z","lvl":"warn","evt":"voice.unclear","stage":"plan","err":"InternalServerError: Error code: 500 - {'error': {'message': 'Internal error encountered.', 'code': 'api_error'}}","audio_kb":105.3}
-{"ts":"2026-08-11T22:23:35.844Z","lvl":"info","evt":"voice.heard","text":"go straight and then turn right","answer":"none","steps":2,"rtt_s":16.45,"audio_kb":86.4}
-{"ts":"2026-08-11T22:23:41.392Z","lvl":"warn","evt":"log","msg":"straight_m(1.000m): high left-right sync error \u2014 \u0394L=3228 \u0394R=2553 diff=675 (20.9%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:23:43.011Z","lvl":"warn","evt":"log","msg":"right(90.0\u00b0): high left-right sync error \u2014 \u0394L=507 \u0394R=342 diff=165 (32.5%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:23:48.152Z","lvl":"info","evt":"voice.noise","reason":"too quiet","dropped_total":6,"dur":2.3,"peak":0.0057,"voiced_s":0.0,"mod":20.9,"repeats":2}
-{"ts":"2026-08-11T22:24:05.033Z","lvl":"info","evt":"voice.heard","text":"spin 360 degrees","answer":"none","steps":1,"rtt_s":11.24,"audio_kb":105.3}
-{"ts":"2026-08-11T22:24:09.336Z","lvl":"warn","evt":"log","msg":"left(360.0\u00b0): high left-right sync error \u2014 \u0394L=2208 \u0394R=1281 diff=927 (42.0%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:24:30.190Z","lvl":"warn","evt":"voice.unclear","stage":"plan","err":"InternalServerError: Error code: 500 - {'error': {'message': 'Internal error encountered.', 'code': 'api_error'}}","audio_kb":74.8}
-{"ts":"2026-08-11T22:24:47.449Z","lvl":"info","evt":"voice.heard","text":"go straight for 2 meters","answer":"none","steps":1,"rtt_s":10.86,"audio_kb":73.3}
-{"ts":"2026-08-11T22:24:58.741Z","lvl":"warn","evt":"log","msg":"straight_m(2.000m): high left-right sync error \u2014 \u0394L=6961 \u0394R=5027 diff=1934 (27.8%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:25:03.898Z","lvl":"info","evt":"voice.noise","reason":"too quiet","dropped_total":9,"dur":1.97,"peak":0.0015,"voiced_s":0.0,"mod":8.9,"repeats":2}
-{"ts":"2026-08-11T22:25:24.906Z","lvl":"info","evt":"voice.heard","text":"turn right","answer":"none","steps":1,"rtt_s":14.5,"audio_kb":95.1}
-{"ts":"2026-08-11T22:25:26.590Z","lvl":"warn","evt":"log","msg":"right(90.0\u00b0): high left-right sync error \u2014 \u0394L=589 \u0394R=341 diff=248 (42.1%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:26:00.907Z","lvl":"info","evt":"voice.heard","text":"go right","answer":"none","steps":1,"rtt_s":15.19,"audio_kb":98.0}
-{"ts":"2026-08-11T22:26:02.469Z","lvl":"warn","evt":"log","msg":"right(90.0\u00b0): high left-right sync error \u2014 \u0394L=763 \u0394R=345 diff=418 (54.8%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:26:08.846Z","lvl":"info","evt":"voice.noise","reason":"too quiet","dropped_total":11,"dur":2.88,"peak":0.005,"voiced_s":0.0,"mod":14.8,"repeats":1}
-{"ts":"2026-08-11T22:26:35.891Z","lvl":"info","evt":"voice.heard","text":"","answer":"unclear","steps":0,"rtt_s":11.86,"audio_kb":140.8}
-{"ts":"2026-08-11T22:26:36.491Z","lvl":"info","evt":"gesture","name":"unclear","mode":"sync","steps":3}
-{"ts":"2026-08-11T22:26:37.574Z","lvl":"warn","evt":"log","msg":"left(30.0\u00b0): high left-right sync error \u2014 \u0394L=233 \u0394R=176 diff=57 (24.5%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:26:38.784Z","lvl":"warn","evt":"log","msg":"right(60.0\u00b0): high left-right sync error \u2014 \u0394L=319 \u0394R=266 diff=53 (16.6%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:26:39.848Z","lvl":"warn","evt":"log","msg":"left(30.0\u00b0): high left-right sync error \u2014 \u0394L=157 \u0394R=116 diff=41 (26.1%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
-{"ts":"2026-08-11T22:26:57.742Z","lvl":"warn","evt":"signal","sig":"SIGINT","action":"stopping"}
+{"ts":"2026-08-12T21:41:12.067Z","lvl":"info","evt":"session.start","mode":"voice-only","pid":1613,"port":"/dev/ttyUSB0","speed_pct":70.0,"log":"logs.json"}
+{"ts":"2026-08-12T21:41:12.127Z","lvl":"info","evt":"battery","pct":83.4,"volts":3.86,"charging":false,"low":false}
+{"ts":"2026-08-12T21:41:12.128Z","lvl":"info","evt":"battery.say","text":"Battery 83 percent, 3 point 9 volts","pct":83.4,"volts":3.86,"charging":false}
+{"ts":"2026-08-12T21:41:14.358Z","lvl":"warn","evt":"signal","sig":"SIGINT","action":"stopping"}
+{"ts":"2026-08-12T21:42:56.387Z","lvl":"info","evt":"session.start","mode":"voice-only","pid":1675,"port":"/dev/ttyUSB0","speed_pct":70.0,"log":"logs.json"}
+{"ts":"2026-08-12T21:42:56.434Z","lvl":"info","evt":"battery","pct":82.9,"volts":3.85,"charging":false,"low":false}
+{"ts":"2026-08-12T21:42:56.434Z","lvl":"info","evt":"battery.say","text":"Battery 83 percent, 3 point 9 volts","pct":82.9,"volts":3.85,"charging":false}
+{"ts":"2026-08-12T21:43:02.646Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v4-quad built Aug 11 2026 16:49:14","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-12T21:43:08.791Z","lvl":"info","evt":"voice.connect","backend":"gemini-live","model":"gemini-3.1-flash-live-preview","modality":"AUDIO"}
+{"ts":"2026-08-12T21:43:15.085Z","lvl":"info","evt":"voice.heard","text":"Go right, then left."}
+{"ts":"2026-08-12T21:43:16.113Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":90},"ok":true,"turned_deg":90.0}
+{"ts":"2026-08-12T21:43:17.522Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":-90},"ok":true,"turned_deg":-90.0}
+{"ts":"2026-08-12T21:43:52.784Z","lvl":"warn","evt":"audio.error","stage":"mic-queue","err":"uplink behind, dropping audio","dropped":1}
+{"ts":"2026-08-12T21:43:58.634Z","lvl":"warn","evt":"log","msg":"emergency_stop: out-of-band S sent (seq 240)","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-12T21:43:58.635Z","lvl":"error","evt":"voice.drop","err":"ConnectionClosedError: sent 1011 (internal error) keepalive ping timeout; no close frame received"}
+{"ts":"2026-08-12T21:44:01.997Z","lvl":"info","evt":"voice.connect","backend":"gemini-live","model":"gemini-3.1-flash-live-preview","modality":"AUDIO"}
+{"ts":"2026-08-12T21:44:10.097Z","lvl":"info","evt":"voice.heard","text":"right right left left"}
+{"ts":"2026-08-12T21:44:11.509Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":90},"ok":true,"turned_deg":90.0}
+{"ts":"2026-08-12T21:44:12.663Z","lvl":"warn","evt":"log","msg":"right(90.0\u00b0): high left-right sync error \u2014 \u0394L=352 \u0394R=396 diff=44 (11.1%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
+{"ts":"2026-08-12T21:44:12.665Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":90},"ok":true,"turned_deg":90.0}
+{"ts":"2026-08-12T21:44:14.069Z","lvl":"warn","evt":"log","msg":"left(90.0\u00b0): high left-right sync error \u2014 \u0394L=342 \u0394R=381 diff=39 (10.2%) \u2014 robot likely drifted; consider tuning SYNC_KP/KI in firmware","src":"drivetrain.drivetrain_client"}
+{"ts":"2026-08-12T21:44:14.071Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":-90},"ok":true,"turned_deg":-90.0}
+{"ts":"2026-08-12T21:44:15.229Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":-90},"ok":true,"turned_deg":-90.0}
+{"ts":"2026-08-12T21:44:39.829Z","lvl":"warn","evt":"signal","sig":"SIGINT","action":"stopping"}
+{"ts":"2026-08-12T21:44:39.832Z","lvl":"warn","evt":"log","msg":"emergency_stop: out-of-band S sent (seq 241)","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-12T21:44:39.833Z","lvl":"fatal","evt":"estop","reason":"process dying: signal SIGINT"}
