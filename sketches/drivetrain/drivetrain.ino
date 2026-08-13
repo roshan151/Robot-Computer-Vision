@@ -261,12 +261,30 @@ void brakeMotors() {
 }
 
 // ------------------- Direction / reversal helpers ---------------- //
+// NOTE: L and R are mirrored relative to the textbook mapping (which is
+// L = -1,+1 and R = +1,-1).  This is deliberate and must not be "tidied".
+//
+// The harness has the left driver channel wired to the physical RIGHT wheel
+// and vice versa.  That is invisible on F and B, whose sign pairs are
+// symmetric, but it mirrors every turn -- the bug this compensates for was
+// "commanded right 360, robot turned left".
+//
+// Compensating HERE rather than at the pin defines is safe only because the
+// motor<->encoder pairing is self-consistent: channel L and enc_left refer to
+// the same wheel as each other, they are just both the wheel on the right.
+// The sync loop compares enc_left against enc_right and corrects channels L
+// and R, so a consistent whole-robot relabel leaves it correct.  If the
+// pairing is ever broken (channel L driving the wheel that enc_RIGHT
+// measures) this fix is NOT sufficient -- the sync loop becomes positive
+// feedback and must be fixed at the wiring or the pin defines instead.
+// The tell is a sync error pinned near SYNC_AUTHORITY_PCT and always on the
+// same side; drivetrain_client.py reports exactly that.
 void wheelSigns(char dir, int8_t &left, int8_t &right) {
   switch (dir) {
     case 'F': left =  1; right =  1; break;
     case 'B': left = -1; right = -1; break;
-    case 'L': left = -1; right =  1; break;
-    case 'R': left =  1; right = -1; break;
+    case 'L': left =  1; right = -1; break;   // mirrored -- see note above
+    case 'R': left = -1; right =  1; break;   // mirrored -- see note above
     default:  left =  0; right =  0; break;
   }
 }

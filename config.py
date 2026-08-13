@@ -58,13 +58,23 @@ SERIAL_TIMEOUT = 0.05
 #   2. Run: drivetrain.straight_m(1.0)
 #   3. Measure actual distance traveled in cm.
 #   4. New value = current TICKS_PER_CM * (100 / measured_cm)
-TICKS_PER_CM: float = float(os.environ.get("ROBOT_TICKS_PER_CM", "25.0"))
+#
+# 38.5 came from 25.0 * (100 / 65) after a 1.0 m command travelled 65 cm.
+# SINGLE TRIAL — the procedure asks for three runs averaged, so treat this as
+# provisional until it has been repeated.
+TICKS_PER_CM: float = float(os.environ.get("ROBOT_TICKS_PER_CM", "38.5"))
 
 # How to calibrate TICKS_PER_DEGREE:
 #   1. Run: drivetrain.right(360)
 #   2. Count actual degrees rotated.
 #   3. New value = current TICKS_PER_DEGREE * (360 / measured_degrees)
-TICKS_PER_DEGREE: float = float(os.environ.get("ROBOT_TICKS_PER_DEGREE", "3.5"))
+#
+# 7.0 is EXTRAPOLATED, not measured: a right(360) produced 180 degrees, but in
+# the WRONG DIRECTION, on firmware whose L/R mapping has since been mirrored.
+# A reading taken while the robot was turning the other way is not evidence
+# about how far it turns the right way -- re-measure on the reflashed firmware
+# before trusting this.
+TICKS_PER_DEGREE: float = float(os.environ.get("ROBOT_TICKS_PER_DEGREE", "7.0"))
 
 # Acceptable sync-error ratio between left and right encoders (0.0–1.0).
 # A move producing more skew than this triggers a warning log.
