@@ -22,7 +22,9 @@ tone must not play into a live microphone.
 Audio format
 ------------
 16 kHz signed 16-bit mono PCM upstream, which is what the Live API expects and
-what the Pi's capture path already produces.
+what the Pi's capture path already produces. Gemini's server-side VAD determines
+speech activity; this client continuously streams the PCM and does not implement
+its own speech gate.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 SEND_SAMPLE_RATE = 16000     # uplink: what the Live API expects
 RECV_SAMPLE_RATE = 24000     # downlink: what it returns (only used if played)
-CHUNK_FRAMES = 1024          # ~64 ms at 16 kHz
+CHUNK_FRAMES = 640           # 40 ms at 16 kHz
 
 
 class LiveAgentError(RuntimeError):
@@ -103,6 +105,22 @@ class LiveAgent:
             "response_modalities": [config.LIVE_RESPONSE_MODALITY],
             "system_instruction": config.LIVE_SYSTEM_PROMPT,
             "tools": [{"function_declarations": declarations()}],
+
+            # Let Gemini perform server-side voice activity detection (VAD).
+            #
+            # We continuously stream microphone PCM with send_realtime_input().
+            # Gemini decides when speech starts/ends; we do NOT send
+            # activity_start/activity_end ourselves.
+            #
+            # TURN_INCLUDES_ONLY_ACTIVITY means the user's turn contains
+            # detected activity rather than accumulating all the silence between
+            # turns. This is the desired behavior for a continuously-open mic.
+            "realtime_input_config": types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=False,
+                ),
+                turn_coverage="TURN_INCLUDES_ONLY_ACTIVITY",
+            ),
         }
         try:
             cfg["input_audio_transcription"] = types.AudioTranscriptionConfig()
