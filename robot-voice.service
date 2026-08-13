@@ -1,0 +1,79 @@
+# systemd unit: start voice-only robot control at Raspberry Pi boot.
+#
+# INSTALL LOCATION:  /etc/systemd/system/robot-voice.service
+#
+#   sudo cp robot-voice.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now robot-voice.service
+#
+# `enable` is what makes it start at boot (it symlinks the unit into
+# multi-user.target.wants/). `--now` also starts it immediately.
+#
+# Before first start:
+#   1. Secrets — the service cannot read your shell environment or ~/.env:
+#        sudo cp .env /etc/robot.env
+#        sudo chown root:root /etc/robot.env && sudo chmod 600 /etc/robot.env
+#   2. Groups — serial port and audio access:
+#        sudo usermod -aG dialout,audio,bluetooth roshan151
+#      (log out and back in, or reboot, for this to take effect)
+#   3. Check User=/WorkingDirectory= below match your actual username and
+#      checkout path.
+#
+# Watch it:      journalctl -u robot-voice -f
+# Robot's own:   python read_log.py --since-start
+# Stop it:       sudo systemctl stop robot-voice
+# Disable boot:  sudo systemctl disable robot-voice
+
+[Unit]
+Description=Robot voice control (silent gestures, no camera)
+Documentation=file:///home/roshan151/Robot-Computer-Vision/documentation/implementation_plan.md
+
+# Ordering only — these say "not before", never "wait until ready".
+# bluetooth.target is why ExecStartPre below still sleeps: the target is
+# reached when bluetoothd is up, NOT when the buds have actually connected.
+After=network-online.target sound.target bluetooth.target
+Wants=network-online.target sound.target bluetooth.target
+
+# Crash-loop guard: if it dies 5 times in 2 minutes, stop and leave the
+# evidence alone rather than restarting over the top of it.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=roshan151
+Group=roshan151
+WorkingDirectory=/home/roshan151/Robot-Computer-Vision
+
+# Secrets. The leading '-' means "start anyway if the file is absent" —
+# config.require() will then give a clear named error instead of a 401.
+EnvironmentFile=-/etc/robot.env
+
+# THE IMPORTANT ONE. A system service gets no user session, so PulseAudio /
+# PipeWire and the Bluetooth audio sink are invisible without this. Symptom
+# if it is missing: everything looks healthy in the log, and there is no
+# sound and no microphone. 1000 is the first login user — check with `id -u`.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+Environment=PYTHONUNBUFFERED=1
+
+# Let Bluetooth actually finish connecting. bluetooth.target only means the
+# daemon started; the buds negotiate HFP a few seconds later, and opening the
+# microphone before that fails or silently picks the wrong device.
+ExecStartPre=/bin/sleep 5
+
+ExecStart=/home/roshan151/Robot-Computer-Vision/start_voice_only.sh
+
+# On stop, SIGTERM reaches the process, which brakes the motors and writes the
+# cause to logs.json before exiting (see robot_log.install_crash_handlers).
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# If the process dies (serial hiccup, API error), restart after 3 s. The
+# firmware's link watchdog brakes the motors the moment the heartbeat stops,
+# so a restart gap is safe.
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
