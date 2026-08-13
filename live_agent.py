@@ -227,34 +227,66 @@ class LiveAgent:
                 )
 
     async def _pump_events(self, session) -> None:
+        """Read the socket forever, across an unbounded number of turns.
+
+        `session.receive()` is a ONE-TURN generator: google-genai breaks out of
+        it the moment a message arrives with `server_content.turn_complete`.
+        A bare `async for response in session.receive()` therefore does not mean
+        "read until the session ends", it means "read until the model finishes
+        answering once" — and then it returns, normally, with no exception and
+        nothing in the log to say so.
+
+        Nobody is reading the socket after that. The websocket's inbound queue
+        fills, the library's reader task stops draining the TCP buffer, and the
+        pongs that answer the server's keepalive pings are never processed. One
+        ping_interval plus one ping_timeout later (20 s + 20 s in `websockets`,
+        which is why the gap was always ~20-40 s and never anything else) the
+        server gives up:
+
+            1011 (internal error) keepalive ping timeout
+
+        So: restart the generator each turn. The outer loop is the session; the
+        inner loop is one turn.
+        """
         last = time.monotonic()
-        async for response in session.receive():
-            # How long this loop went without reading the socket. If it grows,
-            # the receive side has stopped draining and back-pressure will
-            # stall the microphone uplink next — that is the failure mode that
-            # killed the session after two commands, so measure it directly
-            # rather than inferring it from the wreckage.
-            gap = time.monotonic() - last
-            if gap > config.LIVE_STALL_WARN_S:
-                robot_log.event_throttled(
-                    "audio.error", key="recv-stall", window_s=30.0,
-                    level=logging.WARNING, stage="receive-loop",
-                    err="event loop did not read the socket",
-                    stalled_s=round(gap, 2),
-                )
-            last = time.monotonic()
-
-            calls = self._extract_tool_calls(response)
-            if calls:
-                await self._handle_tool_calls(session, calls)
+        while True:
+            turn_msgs = 0
+            async for response in session.receive():
+                turn_msgs += 1
+                # How long this loop went without reading the socket. If it
+                # grows, the receive side has stopped draining and back-pressure
+                # will stall the microphone uplink next, so measure it directly
+                # rather than inferring it from the wreckage.
+                gap = time.monotonic() - last
+                if gap > config.LIVE_STALL_WARN_S:
+                    robot_log.event_throttled(
+                        "audio.error", key="recv-stall", window_s=30.0,
+                        level=logging.WARNING, stage="receive-loop",
+                        err="event loop did not read the socket",
+                        stalled_s=round(gap, 2),
+                    )
                 last = time.monotonic()
-                continue
 
-            # Audio comes back because the model is speech-to-speech, but the
-            # robot is silent by design: read it off the socket and drop it.
-            # Nothing plays it, so nothing re-enters the microphone.
-            self._drain_audio(response)
-            self._log_transcripts(response)
+                calls = self._extract_tool_calls(response)
+                if calls:
+                    await self._handle_tool_calls(session, calls)
+                    last = time.monotonic()
+                    continue
+
+                # Audio comes back because the model is speech-to-speech, but
+                # the robot is silent by design: read it off the socket and drop
+                # it. Nothing plays it, so nothing re-enters the microphone.
+                self._drain_audio(response)
+                self._log_transcripts(response)
+
+            # A turn that yielded nothing means the socket is gone rather than
+            # that the turn was short — `_receive()` returned falsy instead of
+            # raising. Without this the outer loop becomes a hot spin that
+            # starves the mic uplink and never reconnects.
+            if turn_msgs == 0:
+                raise LiveAgentError(
+                    "live session closed by the server (receive stream ended)")
+            last = time.monotonic()
 
     def _drain_audio(self, response) -> None:
         """Discard generated speech. Counted, so 'silent' stays a deliberate
@@ -384,9 +416,17 @@ class LiveAgent:
             self._open_microphone()
             try:
                 # Deliberately not asyncio.TaskGroup: the Pi runs Python 3.10
-                # and TaskGroup / except* are 3.11+. gather with
-                # FIRST_EXCEPTION gives the same shape — whichever pump dies
-                # first takes the session down, and the other is cancelled.
+                # and TaskGroup / except* are 3.11+. asyncio.wait gives the
+                # same shape — whichever pump finishes first takes the session
+                # down, and the other is cancelled.
+                #
+                # FIRST_COMPLETED, not FIRST_EXCEPTION. Both pumps are infinite
+                # by contract, so either one *returning* is as much a failure as
+                # either one raising. FIRST_EXCEPTION degrades to ALL_COMPLETED
+                # when nothing raises, which meant a receive loop that quietly
+                # ran out of turns left the audio pump shouting into a socket
+                # no one was reading, with no error anywhere until the server's
+                # keepalive timer killed it 20-40 s later.
                 tasks = [
                     asyncio.create_task(self._pump_audio(session),
                                         name="mic-uplink"),
@@ -394,7 +434,7 @@ class LiveAgent:
                                         name="events"),
                 ]
                 done, pending = await asyncio.wait(
-                    tasks, return_when=asyncio.FIRST_EXCEPTION)
+                    tasks, return_when=asyncio.FIRST_COMPLETED)
                 for task in pending:
                     task.cancel()
                 if pending:
