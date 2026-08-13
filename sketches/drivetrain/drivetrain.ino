@@ -90,7 +90,10 @@ void resetFlagsInit(void) {
 // roll must count UP on both sides; if a side counts down, flip its
 // invert to 1 and re-flash.
 #define ENC_L_INVERT  0
-#define ENC_R_INVERT  0
+#define ENC_R_INVERT  1   // right motor is mirror-mounted: forward travel
+                          // spins it the opposite way, so its correctly-paired
+                          // A/B decodes negative. Verified by hand-spin —
+                          // forward roll gave L=+242, R=-187.
 
 // --------------------------- Tunables --------------------------- //
 #define PWM_MAX            255
