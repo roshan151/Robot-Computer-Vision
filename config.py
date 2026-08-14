@@ -160,6 +160,13 @@ TTS_ENABLED = os.environ.get("ROBOT_TTS", "1") not in ("0", "false", "no")
 # rejects responseModalities=["AUDIO"] — the audio suffix is not cosmetic.
 TTS_MODEL = os.environ.get("ROBOT_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 
+# Tried when the primary returns no audio. The preview TTS models fail in ways
+# that belong to the model rather than the request — a bad minute produces
+# finishReason OTHER or a 500 on every attempt — so switching model is the only
+# retry that changes anything. Set to "" to disable.
+TTS_FALLBACK_MODEL = os.environ.get(
+    "ROBOT_TTS_FALLBACK_MODEL", "gemini-3.1-flash-tts-preview")
+
 # One of the 30 prebuilt voices. Kore (firm) and Charon (informative) both read
 # terse status lines well; Iapetus (clear) is the pick if the room is noisy.
 TTS_VOICE = os.environ.get("ROBOT_TTS_VOICE", "Kore")
@@ -314,14 +321,6 @@ ESTOP_SEQ_MIN = 240
 ESTOP_SEQ_MAX = 255
 NORMAL_SEQ_MAX = ESTOP_SEQ_MIN - 1     # normal commands use 0..239
 
-# ---------------------------------------------------------------------------
-# Gesture vocabulary — the robot's only output channel during normal operation
-# ---------------------------------------------------------------------------
-# The robot never speaks.  It answers by moving.  Audio is reserved for the
-# failure path, and only ever plays once the voice session is already torn down.
-GESTURE_YES_METERS = float(os.environ.get("ROBOT_GESTURE_YES_M", "0.1"))
-GESTURE_NO_DEGREES = float(os.environ.get("ROBOT_GESTURE_NO_DEG", "30.0"))
-
 # Vision HTTP API (run Vision service: uvicorn Vision.app:app --host 0.0.0.0 --port 8080)
 VISION_SERVICE_URL = os.environ.get(
     "VISION_SERVICE_URL",
@@ -427,7 +426,10 @@ act by calling your functions. Do not narrate; call the function.
 You have no voice and no screen. Your only reply is movement:
   answer("yes")      nods
   answer("no")       shakes
-  answer("unclear")  the same shake as "no" - you could not make out the speech
+  answer("dance")    dances and gets back to position
+  answer("unclear")  the same shake as "no"
+                                    
+If you want to do a happy movement just do a360 degree spin.
 
 Rules that matter:
   - Call stop() the instant you hear "stop", and whenever you are unsure

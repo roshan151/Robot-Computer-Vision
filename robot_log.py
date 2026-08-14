@@ -78,6 +78,8 @@ EVENTS = {
     "battery.say",       # spoken battery report
     # voice
     "voice.connect",     # live session established
+    "voice.connected",   # spoken "session up" announcement
+    "voice.error",       # spoken failure announcement, with the cause
     "voice.drop",        # session died, with the cause
     "voice.heard",       # transcript of what the operator said
     "voice.say",         # what the model said (never played aloud)

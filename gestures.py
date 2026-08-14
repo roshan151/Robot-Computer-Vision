@@ -35,16 +35,34 @@ logger = logging.getLogger(__name__)
 
 Step = Tuple[str, float]
 
+GESTURE_YES_METERS = float("0.1")
+GESTURE_NO_DEGREES = float("30.0")
+
+
 YES: List[Step] = [
-    ("straight", config.GESTURE_YES_METERS),
-    ("reverse", config.GESTURE_YES_METERS),
+    ("straight", GESTURE_YES_METERS),
+    ("reverse", GESTURE_YES_METERS),
 ]
 
 NO: List[Step] = [
-    ("left", config.GESTURE_NO_DEGREES),
-    ("right", config.GESTURE_NO_DEGREES * 2),
-    ("left", config.GESTURE_NO_DEGREES),
+    ("left", GESTURE_NO_DEGREES),
+    ("right", GESTURE_NO_DEGREES * 2),
+    ("left", GESTURE_NO_DEGREES),
 ]
+
+DANCE: List[Step] = [
+    ("left", GESTURE_NO_DEGREES),
+    ("reverse", GESTURE_YES_METERS),
+    ("right", GESTURE_NO_DEGREES*2),
+    ("reverse", GESTURE_YES_METERS),
+    ("left", GESTURE_NO_DEGREES*2),
+    ("reverse", GESTURE_YES_METERS),
+    ("right", GESTURE_NO_DEGREES*2),
+    ("reverse", GESTURE_YES_METERS),
+    ("left", 360+GESTURE_NO_DEGREES),
+    ("straight", GESTURE_YES_METERS*4)
+]
+
 
 UNCLEAR: List[Step] = NO
 
@@ -52,6 +70,7 @@ VOCABULARY = {
     "yes": YES,
     "no": NO,
     "unclear": UNCLEAR,
+    "dance": DANCE
 }
 
 
@@ -104,3 +123,6 @@ class Gesturer:
 
     def unclear(self) -> Optional[List[int]]:
         return self.play("unclear")
+    
+    def dance(self) -> Optional[List[int]]:
+        return self.play("dance")

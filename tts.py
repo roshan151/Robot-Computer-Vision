@@ -245,6 +245,20 @@ def _cache_path(text: str) -> Path:
     return _cache_dir() / f"{hashlib.sha1(key.encode()).hexdigest()}.wav"
 
 
+def _normalize(text: str) -> str:
+    """Terminal punctuation, always.
+
+    Not cosmetic. A prompt ending mid-phrase — "Battery 55 percent, 3.6 volts"
+    — reads to the speech classifier like an instruction that was cut off, and
+    the observed result is `finishReason: OTHER` with zero output tokens: a
+    200 response containing no audio at all. The static phrases all ended in a
+    period and synthesized fine; the battery line did not and never once
+    succeeded. One character.
+    """
+    t = " ".join(text.split())
+    return t if not t or t[-1] in ".!?" else t + "."
+
+
 def _prompt(text: str) -> str:
     """`Say clearly and calmly: Robot online.`
 
@@ -255,7 +269,34 @@ def _prompt(text: str) -> str:
     as if it were an instruction. Keep the style short for the same reason.
     """
     style = config.TTS_STYLE.strip().rstrip(":")
-    return f"{style}: {text}" if style else text
+    body = _normalize(text)
+    return f"{style}: {body}" if style else body
+
+
+def _why_no_audio(payload: dict) -> dict:
+    """Name the reason a 200 came back mute.
+
+    `finishReason: OTHER` with promptTokenCount == totalTokenCount means the
+    model generated nothing at all — the speech classifier declined the prompt
+    rather than the request being malformed. That is a very different fix from
+    a blocked-content stop, and without pulling these fields out both look
+    identical in the log: "200 with no audio".
+    """
+    out: dict = {}
+    cands = payload.get("candidates") or []
+    if cands and isinstance(cands[0], dict):
+        out["finish"] = cands[0].get("finishReason")
+    fb = payload.get("promptFeedback")
+    if isinstance(fb, dict):
+        out["blocked"] = fb.get("blockReason")
+    usage = payload.get("usageMetadata")
+    if isinstance(usage, dict):
+        prompt_t = usage.get("promptTokenCount")
+        total_t = usage.get("totalTokenCount")
+        out["tokens"] = f"{prompt_t}/{total_t}"
+        if prompt_t is not None and prompt_t == total_t:
+            out["note"] = "model produced no output tokens"
+    return out
 
 
 def _extract_audio(payload: dict) -> Optional[bytes]:
@@ -281,8 +322,54 @@ def _extract_audio(payload: dict) -> Optional[bytes]:
     return None
 
 
+def _request(model: str, prompt: str, api_key: str, requests_mod) -> tuple:
+    """One call. Returns (audio_or_None, retryable, detail_for_the_log)."""
+    try:
+        resp = requests_mod.post(
+            GENERATE_URL.format(model=model),
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {"voiceName": config.TTS_VOICE},
+                        },
+                    },
+                },
+            },
+            timeout=config.TTS_TIMEOUT_S,
+        )
+    except Exception as e:
+        return None, True, {"err": f"{type(e).__name__}: {e}"}
+
+    if resp.status_code == 200:
+        try:
+            payload = resp.json()
+        except Exception as e:
+            return None, True, {"err": f"unparseable 200: {type(e).__name__}: {e}"}
+        audio = _extract_audio(payload)
+        if audio:
+            return audio, False, {}
+        return None, True, {"err": "200 with no audio", **_why_no_audio(payload)}
+
+    # Body quoted, not parsed: Google's message names the fix more often than
+    # the status does ("model not found" for a non-TTS model id, "API key not
+    # valid", quota exceeded, and so on).
+    return (None, resp.status_code in RETRY_STATUSES,
+            {"status": resp.status_code, "err": resp.text[:300]})
+
+
 def _synthesize(text: str) -> Optional[bytes]:
-    """One Gemini TTS request, with retries. WAV bytes, or None on failure."""
+    """Gemini TTS with retries, then a fallback model. WAV bytes or None.
+
+    The fallback exists because the preview TTS models fail in ways that are
+    specific to the model rather than to the request: a bad minute on
+    2.5-flash-preview-tts produces `finishReason: OTHER` or a 500 on every
+    attempt, and no amount of retrying the same endpoint fixes it. Trying a
+    different model is the only retry that changes anything.
+    """
     try:
         api_key = config.require("GEMINI_API_KEY")
     except Exception as e:
@@ -298,54 +385,28 @@ def _synthesize(text: str) -> Optional[bytes]:
                         err=str(e), fix="pip install requests")
         return None
 
-    url = GENERATE_URL.format(model=config.TTS_MODEL)
-    body = {
-        "contents": [{"parts": [{"text": _prompt(text)}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": config.TTS_VOICE},
-                },
-            },
-        },
-    }
+    prompt = _prompt(text)
+    models = [config.TTS_MODEL]
+    if config.TTS_FALLBACK_MODEL and config.TTS_FALLBACK_MODEL != config.TTS_MODEL:
+        models.append(config.TTS_FALLBACK_MODEL)
 
-    for attempt in range(1, config.TTS_RETRIES + 2):
-        try:
-            resp = requests.post(
-                url,
-                headers={"x-goog-api-key": api_key,
-                         "Content-Type": "application/json"},
-                json=body,
-                timeout=config.TTS_TIMEOUT_S,
-            )
-            if resp.status_code == 200:
-                audio = _extract_audio(resp.json())
-                if audio:
-                    return _wav_bytes(audio)
-                # 200 with no audio is the documented "returned text tokens
-                # instead" case leaking through. Retryable, and the body is
-                # logged because it usually contains the model's excuse.
-                robot_log.event("audio.error", logging.WARNING,
-                                stage="tts-response", attempt=attempt,
-                                err="200 with no audio in the response",
-                                body=resp.text[:300])
-            else:
-                # Body quoted, not parsed: Google's message names the fix more
-                # often than the status does ("model not found" for a non-TTS
-                # model id, "API key not valid", quota exceeded, and so on).
-                robot_log.event("audio.error", logging.WARNING, stage="tts-http",
-                                status=resp.status_code, attempt=attempt,
-                                model=config.TTS_MODEL, err=resp.text[:300])
-                if resp.status_code not in RETRY_STATUSES:
-                    return None                 # config error; retrying repeats it
-        except Exception as e:
-            robot_log.event("audio.error", logging.WARNING, stage="tts-synth",
-                            attempt=attempt, err=f"{type(e).__name__}: {e}")
+    for model in models:
+        for attempt in range(1, config.TTS_RETRIES + 2):
+            audio, retryable, detail = _request(model, prompt, api_key, requests)
+            if audio:
+                if model != config.TTS_MODEL:
+                    robot_log.event("audio.error", logging.WARNING,
+                                    stage="tts-fallback-model", model=model,
+                                    err=f"{config.TTS_MODEL} produced no audio",
+                                    fix=f"set ROBOT_TTS_MODEL={model} to skip the wait")
+                return _wav_bytes(audio)
 
-        if attempt <= config.TTS_RETRIES:
-            time.sleep(min(2 ** (attempt - 1) * 0.5, 4.0))
+            robot_log.event("audio.error", logging.WARNING, stage="tts-response",
+                            model=model, attempt=attempt, **detail)
+            if not retryable:
+                break                     # config error; the next model may differ
+            if attempt <= config.TTS_RETRIES:
+                time.sleep(min(2 ** (attempt - 1) * 0.5, 4.0))
 
     return None
 
@@ -461,6 +522,47 @@ def prime(names: Optional[list] = None) -> dict:
     return out
 
 
+def diagnose(text: str = "Battery 55 percent, 3.6 volts") -> list:
+    """Try every combination of model and prompt shape, report what returns
+    audio. Bypasses the cache entirely.
+
+    Exists because the failure this is aimed at — a 200 with no audio — cannot
+    be reasoned about from the outside. Whether it is the model, the missing
+    terminal punctuation or the style prefix is an empirical question, and the
+    answer differs by key and by day. Run it on the robot and read the table.
+    """
+    try:
+        api_key = config.require("GEMINI_API_KEY")
+        import requests
+    except Exception as e:
+        return [{"ok": False, "err": f"{type(e).__name__}: {e}"}]
+
+    style = config.TTS_STYLE.strip().rstrip(":")
+    bare = " ".join(text.split()).rstrip(".")
+    shapes = {
+        "bare, no period": bare,
+        "bare + period": bare + ".",
+        "styled, no period": f"{style}: {bare}" if style else None,
+        "styled + period": f"{style}: {bare}." if style else None,
+        "labelled transcript": (
+            "Read the following aloud, clearly and calmly.\n"
+            f"TRANSCRIPT: {bare}."),
+    }
+    models = [m for m in (config.TTS_MODEL, config.TTS_FALLBACK_MODEL) if m]
+
+    results = []
+    for model in models:
+        for name, prompt in shapes.items():
+            if prompt is None:
+                continue
+            audio, _retryable, detail = _request(model, prompt, api_key, requests)
+            results.append({
+                "model": model, "shape": name, "ok": bool(audio),
+                "bytes": len(audio) if audio else 0, **detail,
+            })
+    return results
+
+
 def cache_info() -> dict:
     d = _cache_dir()
     files = list(d.glob("*.wav"))
@@ -479,6 +581,8 @@ if __name__ == "__main__":
     ap.add_argument("text", nargs="*", help="text to speak (default: the static phrases)")
     ap.add_argument("--prime", action="store_true", help="cache the static phrases, do not play")
     ap.add_argument("--info", action="store_true", help="show cache state and exit")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="try every model/prompt shape and report what returns audio")
     args = ap.parse_args()
 
     robot_log.setup()
@@ -486,6 +590,16 @@ if __name__ == "__main__":
     if args.info:
         print(json.dumps(cache_info(), indent=2))
         raise SystemExit(0)
+
+    if args.diagnose:
+        rows = diagnose(" ".join(args.text) or "Battery 55 percent, 3.6 volts")
+        for r in rows:
+            mark = "ok  " if r.get("ok") else "FAIL"
+            extra = " ".join(f"{k}={v}" for k, v in r.items()
+                             if k not in ("ok", "model", "shape", "bytes"))
+            print(f"  {mark} {r.get('model','?'):32} {r.get('shape','?'):22} "
+                  f"{r.get('bytes',0):>7}B  {extra}")
+        raise SystemExit(0 if any(r.get("ok") for r in rows) else 1)
 
     print(f"model   : {config.TTS_MODEL}")
     print(f"voice   : {config.TTS_VOICE}")
