@@ -1,0 +1,59 @@
+{"ts":"2026-08-14T15:53:05.672Z","lvl":"info","evt":"session.start","mode":"voice-only","pid":1723,"port":"/dev/ttyUSB0","speed_pct":70.0,"log":"logs.json"}
+{"ts":"2026-08-14T15:53:16.308Z","lvl":"info","evt":"battery","pct":55.3,"volts":3.62,"charging":false,"low":false}
+{"ts":"2026-08-14T15:53:16.309Z","lvl":"info","evt":"battery.say","text":"Battery 55 percent, 3.6 volts","pct":55.3,"volts":3.62,"charging":false}
+{"ts":"2026-08-14T15:53:20.862Z","lvl":"warn","evt":"audio.error","stage":"tts-response","attempt":1,"err":"200 with no audio in the response","body":"{\n  \"candidates\": [\n    {\n      \"finishReason\": \"OTHER\",\n      \"index\": 0\n    }\n  ],\n  \"usageMetadata\": {\n    \"promptTokenCount\": 16,\n    \"totalTokenCount\": 16,\n    \"promptTokensDetails\": [\n      {\n        \"modality\": \"TEXT\",\n        \"tokenCount\": 16\n      }\n    ],\n    \"serviceTier\": \"standard\"\n  },"}
+{"ts":"2026-08-14T15:53:26.076Z","lvl":"warn","evt":"audio.error","stage":"tts-response","attempt":2,"err":"200 with no audio in the response","body":"{\n  \"candidates\": [\n    {\n      \"finishReason\": \"OTHER\",\n      \"index\": 0\n    }\n  ],\n  \"usageMetadata\": {\n    \"promptTokenCount\": 16,\n    \"totalTokenCount\": 16,\n    \"promptTokensDetails\": [\n      {\n        \"modality\": \"TEXT\",\n        \"tokenCount\": 16\n      }\n    ],\n    \"serviceTier\": \"standard\"\n  },"}
+{"ts":"2026-08-14T15:53:28.974Z","lvl":"warn","evt":"audio.error","stage":"tts-http","status":500,"attempt":3,"model":"gemini-2.5-flash-preview-tts","err":"{\n  \"error\": {\n    \"code\": 500,\n    \"message\": \"An internal error has occurred. Please retry or report in https://developers.generativeai.google/guide/troubleshooting\",\n    \"status\": \"INTERNAL\"\n  }\n}\n"}
+{"ts":"2026-08-14T15:53:28.981Z","lvl":"warn","evt":"audio.error","stage":"tts-fallback","err":"synthesis unavailable","spoke":"Battery level unknown."}
+{"ts":"2026-08-14T15:53:33.945Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v4-quad built Aug 13 2026 11:30:35","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:53:33.946Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v4-quad built Aug 13 2026 11:30:35","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:53:33.946Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v4-quad built Aug 13 2026 11:30:35","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:53:33.947Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v4-quad built Aug 13 2026 11:30:35","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:53:33.947Z","lvl":"warn","evt":"log","msg":"Arduino firmware: drv8871-v4-quad built Aug 13 2026 11:30:35","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:53:39.080Z","lvl":"info","evt":"voice.connect","backend":"gemini-live","model":"gemini-3.1-flash-live-preview","modality":"AUDIO"}
+{"ts":"2026-08-14T15:53:39.081Z","lvl":"info","evt":"voice.connected","text":"Robot online. Voice session connected.","_unregistered":true}
+{"ts":"2026-08-14T15:53:44.868Z","lvl":"warn","evt":"audio.error","stage":"receive-loop","err":"event loop did not read the socket","stalled_s":1.01}
+{"ts":"2026-08-14T15:53:54.269Z","lvl":"info","evt":"voice.heard","text":"Go straight then turn left."}
+{"ts":"2026-08-14T15:53:54.275Z","lvl":"info","evt":"voice.tool","name":"drive","args":{"meters":1},"ok":true,"queued":1,"queue_depth":1,"meters":1.0}
+{"ts":"2026-08-14T15:53:54.276Z","lvl":"debug","evt":"move.start","job":1,"op":"straight","val":1.0}
+{"ts":"2026-08-14T15:53:54.278Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":-90},"ok":true,"queued":2,"queue_depth":1,"degrees":-90.0}
+{"ts":"2026-08-14T15:54:00.887Z","lvl":"info","evt":"move.done","job":1,"op":"straight","val":1.0,"dur":6.612}
+{"ts":"2026-08-14T15:54:00.888Z","lvl":"debug","evt":"move.start","job":2,"op":"left","val":90.0}
+{"ts":"2026-08-14T15:54:02.702Z","lvl":"info","evt":"move.done","job":2,"op":"left","val":90.0,"dur":1.814}
+{"ts":"2026-08-14T15:54:08.176Z","lvl":"info","evt":"voice.heard","text":"left right left"}
+{"ts":"2026-08-14T15:54:08.182Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":-90},"ok":true,"queued":3,"queue_depth":1,"degrees":-90.0}
+{"ts":"2026-08-14T15:54:08.184Z","lvl":"debug","evt":"move.start","job":3,"op":"left","val":90.0}
+{"ts":"2026-08-14T15:54:08.186Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":90},"ok":true,"queued":4,"queue_depth":1,"degrees":90.0}
+{"ts":"2026-08-14T15:54:08.188Z","lvl":"info","evt":"voice.tool","name":"turn","args":{"degrees":-90},"ok":true,"queued":5,"queue_depth":2,"degrees":-90.0}
+{"ts":"2026-08-14T15:54:09.641Z","lvl":"info","evt":"move.done","job":3,"op":"left","val":90.0,"dur":1.458}
+{"ts":"2026-08-14T15:54:09.642Z","lvl":"debug","evt":"move.start","job":4,"op":"right","val":90.0}
+{"ts":"2026-08-14T15:54:11.450Z","lvl":"info","evt":"move.done","job":4,"op":"right","val":90.0,"dur":1.808}
+{"ts":"2026-08-14T15:54:11.451Z","lvl":"debug","evt":"move.start","job":5,"op":"left","val":90.0}
+{"ts":"2026-08-14T15:54:13.310Z","lvl":"info","evt":"move.done","job":5,"op":"left","val":90.0,"dur":1.859}
+{"ts":"2026-08-14T15:54:20.743Z","lvl":"warn","evt":"audio.error","stage":"receive-loop","err":"event loop did not read the socket","stalled_s":0.9,"repeats":2}
+{"ts":"2026-08-14T15:54:29.346Z","lvl":"info","evt":"voice.heard","text":"Look straight."}
+{"ts":"2026-08-14T15:54:29.351Z","lvl":"info","evt":"gesture","name":"no","jobs":[6,7,8]}
+{"ts":"2026-08-14T15:54:29.353Z","lvl":"info","evt":"voice.tool","name":"answer","args":{"value":"no"},"ok":true,"gestured":true,"value":"no","jobs":[6,7,8]}
+{"ts":"2026-08-14T15:54:30.158Z","lvl":"warn","evt":"log","msg":"left(30.0\u00b0): high left-right sync error \u2014 \u0394L=233 \u0394R=272 diff=39 (14.3%), RIGHT wheel leads","src":"drivetrain.drivetrain_client"}
+{"ts":"2026-08-14T15:54:30.159Z","lvl":"warn","evt":"log","msg":"left(30.0\u00b0): not yet enough history to classify (need 4 moves). If the lead alternates it is drift; if it stays on one side it is a fixed bias and no gain change will help.","src":"drivetrain.drivetrain_client"}
+{"ts":"2026-08-14T15:54:30.159Z","lvl":"info","evt":"move.done","job":6,"op":"left","val":30.0,"dur":0.808,"gesture":true}
+{"ts":"2026-08-14T15:54:31.716Z","lvl":"info","evt":"move.done","job":7,"op":"right","val":60.0,"dur":1.556,"gesture":true}
+{"ts":"2026-08-14T15:54:32.923Z","lvl":"warn","evt":"log","msg":"left(30.0\u00b0): high left-right sync error \u2014 \u0394L=254 \u0394R=291 diff=37 (12.7%), RIGHT wheel leads","src":"drivetrain.drivetrain_client"}
+{"ts":"2026-08-14T15:54:32.926Z","lvl":"warn","evt":"log","msg":"left(30.0\u00b0): not yet enough history to classify (need 4 moves). If the lead alternates it is drift; if it stays on one side it is a fixed bias and no gain change will help.","src":"drivetrain.drivetrain_client"}
+{"ts":"2026-08-14T15:54:32.927Z","lvl":"info","evt":"move.done","job":8,"op":"left","val":30.0,"dur":1.21,"gesture":true}
+{"ts":"2026-08-14T15:54:38.320Z","lvl":"info","evt":"voice.heard","text":"Go straight."}
+{"ts":"2026-08-14T15:54:38.326Z","lvl":"info","evt":"voice.tool","name":"drive","args":{"meters":1},"ok":true,"queued":9,"queue_depth":1,"meters":1.0}
+{"ts":"2026-08-14T15:54:38.327Z","lvl":"debug","evt":"move.start","job":9,"op":"straight","val":1.0}
+{"ts":"2026-08-14T15:54:45.212Z","lvl":"info","evt":"move.done","job":9,"op":"straight","val":1.0,"dur":6.885}
+{"ts":"2026-08-14T15:54:55.382Z","lvl":"warn","evt":"audio.error","stage":"receive-loop","err":"event loop did not read the socket","stalled_s":0.79,"repeats":3}
+{"ts":"2026-08-14T15:55:07.873Z","lvl":"info","evt":"voice.heard","text":"Stop"}
+{"ts":"2026-08-14T15:55:07.880Z","lvl":"warn","evt":"log","msg":"emergency_stop: out-of-band S sent (seq 240)","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:55:07.881Z","lvl":"warn","evt":"estop","reason":"voice: stop","dropped":[],"interrupted":null}
+{"ts":"2026-08-14T15:55:07.882Z","lvl":"info","evt":"voice.tool","name":"stop","args":{},"ok":true,"stopped":true,"cancelled":[]}
+{"ts":"2026-08-14T15:55:09.782Z","lvl":"info","evt":"voice.heard","text":"Go straight."}
+{"ts":"2026-08-14T15:55:09.866Z","lvl":"info","evt":"voice.tool","name":"drive","args":{"meters":1},"ok":true,"queued":10,"queue_depth":1,"meters":1.0}
+{"ts":"2026-08-14T15:55:09.867Z","lvl":"debug","evt":"move.start","job":10,"op":"straight","val":1.0}
+{"ts":"2026-08-14T15:55:16.288Z","lvl":"info","evt":"move.done","job":10,"op":"straight","val":1.0,"dur":6.421}
+{"ts":"2026-08-14T15:55:16.329Z","lvl":"warn","evt":"signal","sig":"SIGINT","action":"stopping"}
+{"ts":"2026-08-14T15:55:16.331Z","lvl":"warn","evt":"log","msg":"emergency_stop: out-of-band S sent (seq 241)","src":"drivetrain.arduino_bridge"}
+{"ts":"2026-08-14T15:55:16.332Z","lvl":"fatal","evt":"estop","reason":"process dying: signal SIGINT"}
