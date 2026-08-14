@@ -12,6 +12,17 @@ Vocabulary
     NO       left 30°, right 60°, left 30°      (a head shake, net zero)
     UNCLEAR  same as NO — "no" and "I didn't understand you" are deliberately
              the same gesture
+    DANCE    a ~20 s celebration ending in a full spin. Net zero on paper:
+             the four 0.1 m reverses are undone by the closing 0.4 m forward,
+             and the turns sum to exactly -360°. It is the one gesture that
+             outlasts the sentence that prompted it, which is why `play()`
+             refuses to start a second one on top of it.
+
+VOCABULARY below is the single source of truth for what the model may ask for:
+robot_tools builds both the function declaration and its validation from it. A
+gesture added here needs no change there — and a gesture added here that ISN'T
+picked up there is exactly how `dance` came to be advertised in the system
+prompt while every call to it was refused.
 
 Thinking has no gesture, by design.  Note the consequence: absence of motion is
 ambiguous between *thinking*, *no*, and *the session is dead* — a silent robot

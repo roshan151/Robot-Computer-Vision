@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, Optional
 
 import config
 import robot_log
-from gestures import Gesturer
+from gestures import VOCABULARY, Gesturer
 from motion_executor import MotionExecutor
 from movement_adapter import ArduinoMovement
 
@@ -93,13 +93,20 @@ def declarations() -> list:
         types.FunctionDeclaration(
             name="answer",
             description=(
-                "Answer a yes/no question by gesturing, since the robot has no "
-                "voice. 'yes' nods; 'no' shakes; 'unclear' uses the same shake "
-                "as 'no' and means you could not make out the speech."
+                "Reply by moving, since the robot does not speak during a "
+                "conversation. 'yes' nods; 'no' shakes; 'unclear' uses the "
+                "same shake as 'no' and means you could not make out the "
+                "speech; 'dance' is a celebration that takes about twenty "
+                "seconds and returns to the starting position — use it only "
+                "when asked, never as an answer to a question. Returns as "
+                "soon as it is queued, and 'stop' cancels it."
             ),
+            # Built from the gesture vocabulary rather than written out, so a
+            # gesture added to gestures.py is offered to the model instead of
+            # being rejected at dispatch by a list nobody remembered to update.
             parameters=schema(value={
                 "type": "STRING",
-                "description": "One of: yes, no, unclear",
+                "description": "One of: " + ", ".join(sorted(VOCABULARY)),
                 "_required": True,
             }),
         ),
@@ -199,8 +206,14 @@ class RobotTools:
 
     def _answer(self, value: str) -> Dict[str, Any]:
         v = str(value).lower().strip()
-        if v not in ("yes", "no", "unclear"):
-            return {"ok": False, "error": f"unknown answer {value!r}"}
+        if v not in VOCABULARY:
+            # Checked against the gesture table itself. Hardcoding the three
+            # original names here is what made `dance` unreachable: it existed
+            # in gestures.py and was advertised in the system prompt, and every
+            # call the model made was refused by this line.
+            return {"ok": False,
+                    "error": f"unknown answer {value!r}; expected one of "
+                             f"{', '.join(sorted(VOCABULARY))}"}
         # Gesturer drops the gesture if the robot is already moving: motion is
         # both the actuator and the display, and the actuator wins.
         jobs = self._gestures.play(v)

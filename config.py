@@ -283,141 +283,6 @@ act by calling your functions. Do not narrate; call the function.
 You have no voice and no screen. Your only reply is movement:
   answer("yes")      nods
   answer("no")       shakes
-  answer("unclear")  the same shake as "no" - you could not make out the speech
-
-Rules that matter:
-  - Call stop() the instant you hear "stop", and whenever you are unsure
-    whether it is safe to keep moving. A needless stop costs nothing.
-  - Never guess a movement you are unsure of. The robot drives on a floor with
-    obstacles it cannot see. If you did not understand, answer("unclear").
-  - Ignore speech that is not addressed to you, and background conversation.
-  - Defaults when no number is given: 1 metre, 90 degrees.
-  - turn() takes positive degrees for RIGHT, negative for LEFT.
-    drive() takes positive metres for FORWARD, negative for BACKWARD.
-""")
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-# The robot has no verbal feedback, so this file is the only place a fault is
-# ever explained. JSON Lines — one object per line, appendable, and a process
-# killed mid-write costs one record instead of the whole file.
-LOG_PATH = os.environ.get("ROBOT_LOG_PATH", "logs.json")
-LOG_MAX_BYTES = int(os.environ.get("ROBOT_LOG_MAX_BYTES", "2000000"))
-LOG_BACKUPS = int(os.environ.get("ROBOT_LOG_BACKUPS", "3"))
-
-# ---------------------------------------------------------------------------
-# Emergency stop
-# ---------------------------------------------------------------------------
-# ArduinoBridge.move() holds _cmd_lock for the whole blocking move, so a normal
-# stop() issued from another thread cannot interrupt it — it waits for the lock
-# and arrives after the move has already finished.  emergency_stop() bypasses
-# _cmd_lock and writes an out-of-band S frame directly.
-#
-# The firmware deduplicates on the single previous sequence number, so the
-# e-stop's seq must differ from the in-flight move's.  Reserve the top of the
-# range for e-stops and cap the normal counter below it.
-ESTOP_SEQ_MIN = 240
-ESTOP_SEQ_MAX = 255
-NORMAL_SEQ_MAX = ESTOP_SEQ_MIN - 1     # normal commands use 0..239
-
-# Vision HTTP API (run Vision service: uvicorn Vision.app:app --host 0.0.0.0 --port 8080)
-VISION_SERVICE_URL = os.environ.get(
-    "VISION_SERVICE_URL",
-    "http://127.0.0.1:8080/detect_objects:frame",
-)
-
-# Comma-separated class names; if any appear, guardian may stop the robot while moving
-VISION_HALT_OBJECTS = [
-    s.strip()
-    for s in os.environ.get("VISION_HALT_OBJECTS", "").split(",")
-    if s.strip()
-]
-
-# Guardian poll rate (Hz) while robot reports motion
-VISION_GUARD_HZ = float(os.environ.get("VISION_GUARD_HZ", "4.0"))
-
-# ---------------------------------------------------------------------------
-# Secrets
-# ---------------------------------------------------------------------------
-# Values come from the environment or .env — never from this file, which is
-# committed. Missing secrets resolve to "" rather than raising at import time,
-# so tests and offline tools can import config without credentials present.
-# Call require() at the point of use to fail with a message that names the
-# variable and where to put it.
-#
-# Source order (first non-empty wins), per secret:
-#   1. process environment  (systemd EnvironmentFile=/etc/robot.env)
-#   2. .env next to this file
-#   3. ""  -> require() raises with instructions
-
-# Google Gemini — the only voice backend.
-GEMINI_API_KEY = ''
-# The robot's voice uses this same key: Gemini TTS lives on
-# generativelanguage.googleapis.com, so there is no second credential and no
-# Cloud project to enable. Note that rate limits are per PROJECT — the Live
-# session and the spoken announcements draw on the same quota.
-
-# Bluetooth headset (see check_bt_audio.sh).
-BT_MAC = os.environ.get("BT_MAC", "")
-
-# Every name here is treated as sensitive by the log redactor.
-SECRET_NAMES = (
-    "GEMINI_API_KEY",
-)
-
-# ---------------------------------------------------------------------------
-# Live agent
-# ---------------------------------------------------------------------------
-# The session streams audio continuously and the model calls the robot's
-# functions directly. There is no push-to-listen, no per-utterance upload and
-# no ambient calibration — those existed to decide when to spend a request,
-# and a streaming session has no discrete requests to spend.
-
-# AUDIO is the only value the native-audio Live models accept — they are
-# speech-to-speech and reject TEXT with "1007 ... response modalities (TEXT)
-# is not supported by the model".
-#
-# The robot is silent anyway. This controls what the model GENERATES, not what
-# gets played: live_agent reads the returned PCM off the socket and drops it,
-# so no speaker emits it and the open microphone never hears it. The model's
-# words still reach logs.json via output_audio_transcription.
-GEMINI_LIVE_MODEL = os.environ.get(
-    "GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
-
-LIVE_RESPONSE_MODALITY = os.environ.get("ROBOT_LIVE_MODALITY", "AUDIO").upper()
-
-# Play the model's speech instead of discarding it. Off by design: the session
-# holds the microphone open continuously, so anything played is streamed
-# straight back to the model as if the operator had said it.
-LIVE_PLAY_AUDIO = os.environ.get("ROBOT_LIVE_PLAY_AUDIO", "0") in ("1", "true", "yes")
-
-# Capture device for the uplink; blank means the system default.
-AUDIO_INPUT_DEVICE = os.environ.get("ROBOT_AUDIO_INPUT_DEVICE", "")
-
-# Diagnostics for the failure that kills a Live session: the event loop stops
-# reading the websocket, back-pressure stalls the microphone uplink, audio is
-# dropped, and the server closes the connection. Both thresholds are generous —
-# they should never fire in normal operation, and when they do they name the
-# cause instead of leaving "audio.error" to be guessed at.
-LIVE_STALL_WARN_S = float(os.environ.get("ROBOT_LIVE_STALL_WARN_S", "0.75"))
-LIVE_SEND_WARN_S = float(os.environ.get("ROBOT_LIVE_SEND_WARN_S", "0.25"))
-
-# Reconnect backoff after a dropped session, doubling to the cap.
-LIVE_RECONNECT_BACKOFF_S = float(os.environ.get("ROBOT_LIVE_BACKOFF_S", "2.0"))
-LIVE_RECONNECT_MAX_S = float(os.environ.get("ROBOT_LIVE_BACKOFF_MAX_S", "60.0"))
-
-# Hard ceiling on a single drive call, enforced in the tool layer rather than
-# the prompt: a limit the model can talk itself out of is not a limit.
-MAX_DRIVE_METERS = float(os.environ.get("ROBOT_MAX_DRIVE_M", "5.0"))
-
-LIVE_SYSTEM_PROMPT = os.environ.get("ROBOT_LIVE_PROMPT", """\
-You are Robin, a small wheeled robot. You hear the operator continuously and
-act by calling your functions. Do not narrate; call the function.
-
-You have no voice and no screen. Your only reply is movement:
-  answer("yes")      nods
-  answer("no")       shakes
   answer("dance")    dances and gets back to position
   answer("unclear")  the same shake as "no"
                                     
@@ -489,6 +354,27 @@ VISION_GUARD_HZ = float(os.environ.get("VISION_GUARD_HZ", "4.0"))
 #   2. .env next to this file
 #   3. ""  -> require() raises with instructions
 
+def _first_env(*names: str) -> str:
+    """First non-empty value among `names`, or "".
+
+    Accepting several names is what lets GOOGLE_API_KEY stand in for
+    GEMINI_API_KEY without a second entry in .env, and it is why the value is
+    resolved here rather than at each call site.
+    """
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v.strip()
+    return ""
+
+
+# Google Gemini — the only voice backend.
+#
+# Read from the environment, never written here. This was briefly hardcoded to
+# "" which meant require() could not succeed no matter what was in /etc/robot.env
+# — the robot could not start, and the error named the variable that was in fact
+# set correctly.
+GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
 # The robot's voice uses this same key: Gemini TTS lives on
 # generativelanguage.googleapis.com, so there is no second credential and no
 # Cloud project to enable. Note that rate limits are per PROJECT — the Live
