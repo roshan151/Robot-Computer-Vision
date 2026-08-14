@@ -351,16 +351,8 @@ VISION_GUARD_HZ = float(os.environ.get("VISION_GUARD_HZ", "4.0"))
 #   2. .env next to this file
 #   3. ""  -> require() raises with instructions
 
-def _first_env(*names: str) -> str:
-    for n in names:
-        v = os.environ.get(n)
-        if v:
-            return v.strip()
-    return ""
-
-
 # Google Gemini — the only voice backend.
-GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
+GEMINI_API_KEY = ''
 # The robot's voice uses this same key: Gemini TTS lives on
 # generativelanguage.googleapis.com, so there is no second credential and no
 # Cloud project to enable. Note that rate limits are per PROJECT — the Live
@@ -467,14 +459,6 @@ ESTOP_SEQ_MIN = 240
 ESTOP_SEQ_MAX = 255
 NORMAL_SEQ_MAX = ESTOP_SEQ_MIN - 1     # normal commands use 0..239
 
-# ---------------------------------------------------------------------------
-# Gesture vocabulary — the robot's only output channel during normal operation
-# ---------------------------------------------------------------------------
-# The robot never speaks.  It answers by moving.  Audio is reserved for the
-# failure path, and only ever plays once the voice session is already torn down.
-GESTURE_YES_METERS = float(os.environ.get("ROBOT_GESTURE_YES_M", "0.1"))
-GESTURE_NO_DEGREES = float(os.environ.get("ROBOT_GESTURE_NO_DEG", "30.0"))
-
 # Vision HTTP API (run Vision service: uvicorn Vision.app:app --host 0.0.0.0 --port 8080)
 VISION_SERVICE_URL = os.environ.get(
     "VISION_SERVICE_URL",
@@ -505,16 +489,6 @@ VISION_GUARD_HZ = float(os.environ.get("VISION_GUARD_HZ", "4.0"))
 #   2. .env next to this file
 #   3. ""  -> require() raises with instructions
 
-def _first_env(*names: str) -> str:
-    for n in names:
-        v = os.environ.get(n)
-        if v:
-            return v.strip()
-    return ""
-
-
-# Google Gemini — the only voice backend.
-GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
 # The robot's voice uses this same key: Gemini TTS lives on
 # generativelanguage.googleapis.com, so there is no second credential and no
 # Cloud project to enable. Note that rate limits are per PROJECT — the Live
