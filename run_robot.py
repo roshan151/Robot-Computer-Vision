@@ -47,7 +47,6 @@ def _emergency_brake(cause: str) -> None:
                         reason=f"process dying: {cause}",
                         err=f"{type(e).__name__}: {e}")
 
-    return battery._query(command)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Voice + vision + Arduino stack")
@@ -85,9 +84,23 @@ def main() -> None:
         log=str(log_path),
     )
 
-    # Battery first, and deliberately before anything opens the microphone:
-    # this is the one moment speech is unambiguously safe, because no capture
-    # stream exists yet. It also gives the operator an audible "I booted".
+    # Prime the static phrases before anything can need them. On a cache hit
+    # this is three stat() calls; on a cold cache it is what makes the robot
+    # able to announce its own failure later with the network down — which is
+    # exactly the situation where it will be asked to.
+    import tts
+
+    primed = tts.prime()
+    if not all(primed.values()):
+        robot_log.event("audio.error", logging.WARNING, stage="tts-prime",
+                        primed=primed,
+                        err="some static phrases are not cached",
+                        fix="check GOOGLE_TTS_API_KEY and network, then run "
+                            "`python tts.py --prime`")
+
+    # Battery next, and deliberately before anything opens the microphone: this
+    # is the one moment speech is unambiguously safe, because no capture stream
+    # exists yet. It also gives the operator an audible "I booted".
     if not args.no_battery_announce:
         import battery
 

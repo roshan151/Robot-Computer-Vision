@@ -62,6 +62,35 @@ def _ticks_per_metre() -> float:
     return config.TICKS_PER_CM * 100.0
 
 
+def _turn_ticks(angle: float) -> int:
+    """Tick target for a turn, less the coast the robot adds while braking.
+
+    The firmware stops counting when the target is reached, but the robot is
+    still moving at that instant and carries on for config.TURN_COAST_TICKS.
+    Aiming short by exactly that much is what makes the FINAL heading correct
+    rather than the heading at the moment the brake engages.
+    """
+    raw   = angle * config.TICKS_PER_DEGREE
+    coast = config.TURN_COAST_TICKS
+    ticks = int(round(raw - coast))
+
+    if ticks < 1:
+        # The turn is smaller than the distance the robot coasts, so it is not
+        # achievable at this speed by braking alone -- whatever target we set,
+        # momentum overshoots it. Say so plainly instead of silently sending a
+        # 1-tick move and letting the caller believe a 2 deg turn happened.
+        min_deg = coast / config.TICKS_PER_DEGREE if config.TICKS_PER_DEGREE else 0
+        logger.warning(
+            "turn of %.1f deg is below the coast floor (~%.1f deg at the "
+            "current speed): the robot overshoots it regardless of target. "
+            "Clamping to 1 tick. Lower the turn speed to reduce coast, or "
+            "recalibrate ROBOT_TURN_COAST_TICKS if this looks wrong.",
+            angle, min_deg,
+        )
+        return 1
+    return ticks
+
+
 class SerialDrivetrain:
     def __init__(
         self,
@@ -154,7 +183,7 @@ class SerialDrivetrain:
         """Tank-turn right by `angle` degrees (encoder-counted)."""
         if angle <= 0:
             raise ValueError(f"right: angle must be positive, got {angle}")
-        ticks = max(1, int(angle * config.TICKS_PER_DEGREE))
+        ticks = _turn_ticks(angle)
         self._move_and_verify(
             "R", duty_from_percent(_speed(speed)), ticks,
             label=f"right({angle:.1f}°)",
@@ -164,7 +193,7 @@ class SerialDrivetrain:
         """Tank-turn left by `angle` degrees (encoder-counted)."""
         if angle <= 0:
             raise ValueError(f"left: angle must be positive, got {angle}")
-        ticks = max(1, int(angle * config.TICKS_PER_DEGREE))
+        ticks = _turn_ticks(angle)
         self._move_and_verify(
             "L", duty_from_percent(_speed(speed)), ticks,
             label=f"left({angle:.1f}°)",

@@ -69,12 +69,41 @@ TICKS_PER_CM: float = float(os.environ.get("ROBOT_TICKS_PER_CM", "38.5"))
 #   2. Count actual degrees rotated.
 #   3. New value = current TICKS_PER_DEGREE * (360 / measured_degrees)
 #
-# 7.0 is EXTRAPOLATED, not measured: a right(360) produced 180 degrees, but in
-# the WRONG DIRECTION, on firmware whose L/R mapping has since been mirrored.
-# A reading taken while the robot was turning the other way is not evidence
-# about how far it turns the right way -- re-measure on the reflashed firmware
-# before trusting this.
-TICKS_PER_DEGREE: float = float(os.environ.get("ROBOT_TICKS_PER_DEGREE", "7.0"))
+# 6.63 = 630 ticks / 95 deg.  At the previous value of 7.0 a 90 deg command
+# targeted 630 ticks and the robot rotated 95 deg, in BOTH directions.
+# Symmetric error, and confirmed to grow with angle -- i.e. a scale error, so
+# it belongs here rather than in TURN_COAST_TICKS below.
+TICKS_PER_DEGREE: float = float(os.environ.get("ROBOT_TICKS_PER_DEGREE", "6.63"))
+
+# Ticks of rotation the robot coasts AFTER the firmware hits its tick target
+# and starts braking.  Subtracted from every turn target.
+#
+# This is deliberately SEPARATE from TICKS_PER_DEGREE because the two errors
+# have different shapes, and folding them together makes one angle right at the
+# cost of every other angle:
+#
+#   * TICKS_PER_DEGREE is a SCALE error -- overshoot grows with the angle.
+#   * Coast is an OFFSET -- roughly the same overshoot at 90 deg and 360 deg,
+#     because it is momentum at the moment of braking and the robot arrives at
+#     every target with the same speed.
+#
+# Scaling TICKS_PER_DEGREE to cancel a 5 deg overshoot at 90 deg shrinks every
+# target by 5.6%, which then UNDERSHOOTS 360 deg by about 14 deg.
+#
+# To separate them, measure at both angles with this set to 0:
+#     overshoot(90) ~= overshoot(360)  -> pure coast, tune this constant
+#     overshoot(360) ~= 4x overshoot(90) -> pure scale, tune TICKS_PER_DEGREE
+#     in between -> both; fix scale on the 360 reading first, then coast
+#
+# 0 because the measured overshoot turned out to be SCALE, not coast: it grew
+# with the commanded angle, so it is fully absorbed by TICKS_PER_DEGREE above.
+# The mechanism is kept because coast is speed-dependent and real -- if turns
+# start overshooting by a CONSTANT amount at some future speed, that residue
+# belongs here, not in TICKS_PER_DEGREE.
+#
+# Speed-dependent: more speed, more momentum, more coast.  Recalibrate if
+# DEFAULT_SPEED_PERCENT changes.
+TURN_COAST_TICKS: float = float(os.environ.get("ROBOT_TURN_COAST_TICKS", "0"))
 
 # Acceptable sync-error ratio between left and right encoders (0.0–1.0).
 # A move producing more skew than this triggers a warning log.
@@ -114,14 +143,36 @@ DEFAULT_MOVE_METERS = float(os.environ.get("ROBOT_DEFAULT_MOVE_M", "1.0"))
 DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
 
 # ---------------------------------------------------------------------------
-# Audio cues + listening
+# Speech (Google Cloud Text-to-Speech, WaveNet)
 # ---------------------------------------------------------------------------
-# The robot runs headless, so a short tone is the only way to know it is
-# waiting. Tones only — never speech. See audio_cues.py for why ordering
-# (cue first, THEN open the microphone) is what keeps it out of the input.
-AUDIO_CUES_ENABLED = os.environ.get("ROBOT_AUDIO_CUES", "1") not in ("0", "false", "no")
-SPEECH_WPM = int(os.environ.get("ROBOT_SPEECH_WPM", "150"))
-SPEECH_AMPLITUDE = int(os.environ.get("ROBOT_SPEECH_AMPLITUDE", "120"))
+# The robot runs headless, so its voice is the only channel it has. It speaks
+# at exactly two moments — session up, session dead — plus the battery report,
+# and every one of them happens while no capture stream is open. See tts.py for
+# why that ordering (speak first, THEN open the microphone) is the whole trick.
+TTS_ENABLED = os.environ.get("ROBOT_TTS", "1") not in ("0", "false", "no")
+
+# WaveNet voices are billed per character and are the reason this replaced
+# espeak: the failure path is read out loud to someone across a room, and
+# intelligibility there is worth more than the fraction of a cent.
+TTS_LANGUAGE = os.environ.get("ROBOT_TTS_LANGUAGE", "en-US")
+TTS_VOICE = os.environ.get("ROBOT_TTS_VOICE", "en-US-Wavenet-D")
+TTS_SPEAKING_RATE = float(os.environ.get("ROBOT_TTS_RATE", "1.0"))
+TTS_PITCH = float(os.environ.get("ROBOT_TTS_PITCH", "0.0"))
+TTS_SAMPLE_RATE = int(os.environ.get("ROBOT_TTS_SAMPLE_RATE", "24000"))
+TTS_DEVICE = os.environ.get("ROBOT_TTS_DEVICE", "")
+
+# Synthesis is a network call, and the two moments the robot speaks are the two
+# moments the network is least trustworthy: boot, and just after the session
+# died. Everything synthesized is cached here and a cache hit never touches the
+# network, which is what lets the robot announce its own failure offline.
+TTS_CACHE_DIR = os.environ.get(
+    "ROBOT_TTS_CACHE_DIR", str(Path.home() / ".cache" / "robot-tts"))
+# Short on purpose. This runs before the microphone opens; a slow API must
+# delay boot by a second or two, not by half a minute.
+TTS_TIMEOUT_S = float(os.environ.get("ROBOT_TTS_TIMEOUT_S", "8.0"))
+# Settle time after speaking before capture opens, covering the room's reverb
+# tail. Raise it if the first syllable of a command goes missing.
+TTS_GUARD_S = float(os.environ.get("ROBOT_TTS_GUARD_S", "0.15"))
 
 # ---------------------------------------------------------------------------
 # Battery (PiSugar)
@@ -140,17 +191,12 @@ PISUGAR_TCP = (
     os.environ.get("PISUGAR_HOST", "127.0.0.1"),
     int(os.environ.get("PISUGAR_PORT", "8423")),
 )
-AUDIO_CUE_DEVICE = os.environ.get("ROBOT_AUDIO_CUE_DEVICE", "")
-AUDIO_CUE_GAIN = float(os.environ.get("ROBOT_AUDIO_CUE_GAIN", "0.25"))
-# Settle time after a cue before capture opens, covering the room's reverb
-# tail. Raise it if the first syllable of a command goes missing.
-AUDIO_CUE_GUARD_S = float(os.environ.get("ROBOT_AUDIO_CUE_GUARD_S", "0.15"))
 
 # How long one listen() call waits for speech to START before looping.
 # This is NOT a prompt interval: a timeout re-arms the microphone silently,
-# with no cue and no output. It exists only so a wedged capture device can be
-# distinguished from an idle one — an infinite block would hang forever with
-# nothing in the log. Raise it to make the robot more patient; it never
+# with no announcement and no output. It exists only so a wedged capture device
+# can be distinguished from an idle one — an infinite block would hang forever
+# with nothing in the log. Raise it to make the robot more patient; it never
 # changes what the operator hears.
 
 
@@ -292,11 +338,12 @@ def _first_env(*names: str) -> str:
 
 # Google Gemini — the only voice backend.
 GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-# Nix TTS — used only on the failure path (pre-rendered clips), never in
-# normal operation. Paths, not secrets, but same principle: no hardcoded
-# home directories in the tree.
-NIX_TTS_DIR = os.environ.get("NIX_TTS_DIR", "")
-NIX_TTS_MODEL = os.environ.get("NIX_TTS_MODEL", "")
+# Google Cloud Text-to-Speech (WaveNet) — the robot's voice. Falls back to the
+# Gemini key because both are Google API keys and a single-project setup is the
+# common case; give it its own key when TTS is enabled on a different project,
+# or when you want the two billed separately.
+GOOGLE_TTS_API_KEY = _first_env(
+    "GOOGLE_TTS_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 # Bluetooth headset (see check_bt_audio.sh).
 BT_MAC = os.environ.get("BT_MAC", "")
@@ -304,6 +351,7 @@ BT_MAC = os.environ.get("BT_MAC", "")
 # Every name here is treated as sensitive by the log redactor.
 SECRET_NAMES = (
     "GEMINI_API_KEY",
+    "GOOGLE_TTS_API_KEY",
 )
 
 # ---------------------------------------------------------------------------
@@ -444,11 +492,12 @@ def _first_env(*names: str) -> str:
 
 # Google Gemini — the only voice backend.
 GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-# Nix TTS — used only on the failure path (pre-rendered clips), never in
-# normal operation. Paths, not secrets, but same principle: no hardcoded
-# home directories in the tree.
-NIX_TTS_DIR = os.environ.get("NIX_TTS_DIR", "")
-NIX_TTS_MODEL = os.environ.get("NIX_TTS_MODEL", "")
+# Google Cloud Text-to-Speech (WaveNet) — the robot's voice. Falls back to the
+# Gemini key because both are Google API keys and a single-project setup is the
+# common case; give it its own key when TTS is enabled on a different project,
+# or when you want the two billed separately.
+GOOGLE_TTS_API_KEY = _first_env(
+    "GOOGLE_TTS_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 # Bluetooth headset (see check_bt_audio.sh).
 BT_MAC = os.environ.get("BT_MAC", "")
@@ -456,6 +505,7 @@ BT_MAC = os.environ.get("BT_MAC", "")
 # Every name here is treated as sensitive by the log redactor.
 SECRET_NAMES = (
     "GEMINI_API_KEY",
+    "GOOGLE_TTS_API_KEY",
 )
 
 # ---------------------------------------------------------------------------

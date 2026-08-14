@@ -8,9 +8,9 @@ when the Pi browns out mid-drive — which on this board also resets the Arduino
 — is a bad way to find out. One spoken line at startup, before the microphone
 is ever opened, costs nothing and prevents that.
 
-This is a deliberate exception to "the robot never speaks", and it is safe for
-the same reason the ready cue is: nothing is listening yet. The announcement
-happens strictly before the first capture stream opens.
+This is a deliberate exception to "the robot is silent during conversation",
+and it is safe for the same reason the connected announcement is: nothing is
+listening yet. It happens strictly before the first capture stream opens.
 
 Protocol: the PiSugar server accepts line commands on a unix socket (and on
 TCP 8423), replying `key: value`.
@@ -26,7 +26,7 @@ from typing import Optional
 
 import config
 import robot_log
-import speech
+import tts
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +46,17 @@ class BatteryState:
         return self.percent is not None or self.volts is not None
 
     def phrase(self) -> str:
-        """Spoken form. Numbers are rounded — nobody needs two decimals."""
+        """Spoken form. Numbers are rounded — nobody needs two decimals.
+
+        Written as plain digits: WaveNet reads "4.1 volts" correctly, so the
+        old "4 point 1" spelling that espeak needed is gone. Keeping it would
+        now make the robot enunciate the workaround.
+        """
         parts = []
         if self.percent is not None:
             parts.append(f"battery {self.percent:.0f} percent")
         if self.volts is not None:
-            # "4 point 1 volts" reads better than "4.15" through any TTS.
-            parts.append(f"{self.volts:.1f} volts".replace(".", " point "))
+            parts.append(f"{self.volts:.1f} volts")
         if self.charging:
             parts.append("charging")
         return ", ".join(parts) if parts else "battery unknown"
@@ -136,7 +140,9 @@ def announce(state: Optional[BatteryState] = None) -> BatteryState:
         robot_log.event("battery", logging.WARNING, ok=False,
                         reason="PiSugar unreachable")
         if config.BATTERY_ANNOUNCE:
-            speech.say("Battery level unknown.", event="battery.say")
+            # A primed static phrase, so this still speaks when the PiSugar is
+            # unreachable because the whole board came up without a network.
+            tts.say(tts.STATIC_PHRASES["battery_unknown"], event="battery.say")
         return st
 
     low = st.percent is not None and st.percent <= config.BATTERY_LOW_PCT
@@ -147,7 +153,12 @@ def announce(state: Optional[BatteryState] = None) -> BatteryState:
         phrase = st.phrase()
         if low and not st.charging:
             phrase += ". Battery low."
-        speech.say(phrase.capitalize(), event="battery.say", **st.as_dict())
+        # The reading is different almost every boot, so this text misses the
+        # cache and is synthesized live. The fallback keeps a flat battery from
+        # being announced as silence when the robot booted with no network.
+        tts.say(phrase.capitalize(), event="battery.say",
+                fallback_text=tts.STATIC_PHRASES["battery_unknown"],
+                **st.as_dict())
 
     return st
 
@@ -166,5 +177,6 @@ if __name__ == "__main__":
     print(f"charging: {st.charging}")
     print(f"phrase  : {st.phrase()}")
     if not args.quiet:
-        print(f"tts     : {speech.backend()}")
+        print(f"voice   : {config.TTS_VOICE}")
+        print(f"playback: {tts.backend()}")
         announce(st)

@@ -16,8 +16,8 @@ Two tasks run concurrently:
     _pump_events  session -> tool dispatch, forever
 
 They are cancelled together. If either dies the session is torn down, the
-error tone plays, and the supervisor reconnects — in that order, because the
-tone must not play into a live microphone.
+failure is spoken aloud (naming the cause), and the supervisor reconnects — in
+that order, because the announcement must not play into a live microphone.
 
 Audio format
 ------------
@@ -31,12 +31,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, Dict, Optional
 
 import config
 import robot_log
-from audio_cues import cues
+import tts
 from robot_tools import RobotTools, declarations
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,6 @@ class LiveAgent:
     def __init__(self, tools: RobotTools, model: Optional[str] = None) -> None:
         self.model = model or config.GEMINI_LIVE_MODEL
         self._tools = tools
-        self._cues = cues()
         self._audio_q: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=64)
         self._stream = None
         self._dropped = 0
@@ -409,9 +409,10 @@ class LiveAgent:
                             model=self.model,
                             modality=config.LIVE_RESPONSE_MODALITY)
 
-            # Tone BEFORE the microphone opens, so it cannot be streamed to the
-            # model as if the operator had made the sound.
-            self._cues.started()
+            # Spoken BEFORE the microphone opens, so it cannot be streamed to
+            # the model as if the operator had said it. Blocking, and the guard
+            # after it covers the room's reverb tail.
+            tts.connected()
 
             self._open_microphone()
             try:
@@ -479,16 +480,43 @@ async def _run_supervised(tools: RobotTools) -> None:
         backoff = min(backoff * 2, config.LIVE_RECONNECT_MAX_S)
 
 
+def _spoken_cause(exc: BaseException) -> str:
+    """A short phrase naming what broke, for the failure announcement.
+
+    Derived from the exception's class name, split at the capitals, so
+    `ConnectionClosedError` is read as "connection closed error" rather than
+    as one unpronounceable word. A handful of causes the operator can actually
+    act on get a sentence written for them instead.
+    """
+    name = type(exc).__name__
+    friendly = {
+        "LiveConfigError": "session configuration rejected",
+        "MissingSecret": "the API key is not configured",
+        "ConnectionRefusedError": "connection refused",
+        "TimeoutError": "the session timed out",
+        "OSError": "an audio device error",
+    }
+    if name in friendly:
+        return friendly[name]
+    words = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+", name)
+    return " ".join(w.lower() for w in words) if words else "an unknown error"
+
+
 def _on_failure(tools: RobotTools, agent: LiveAgent, exc: BaseException) -> None:
-    """Order matters: brake, tear down, THEN make a noise."""
+    """Order matters: brake, tear down, THEN speak."""
     try:
         tools._move.emergency_stop()
     except Exception:
         pass
     robot_log.event("voice.drop", logging.ERROR,
                     err=f"{type(exc).__name__}: {exc}")
-    # Safe to play now: the session is gone, so nothing is listening.
-    agent._cues.error()
+    # Safe to speak now: the session is gone, so nothing is listening.
+    #
+    # The exception type is the description rather than str(exc): the message
+    # can be a wrapped multi-line server payload, and a robot reading a JSON
+    # blob aloud tells the operator less than "connection closed error" does.
+    # The full text is already in logs.json on the line above.
+    tts.error(_spoken_cause(exc))
 
 
 def run_live_agent(move) -> None:

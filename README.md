@@ -166,7 +166,32 @@ Legacy entry name `voice_controls_v2.py` may still exist under `deprecated/`; pr
 ## Resources
 
 - Speech recognition overview: [Real-time speech-to-text on Raspberry Pi](https://atsss.medium.com/real-time-speech-to-text-on-raspberry-pi-and-python-4be8c347a8fc)  
-- Legacy TTS option: [pyttsx3](https://pypi.org/project/pyttsx3/) (current stack may use Nix TTS if configured in `voice_session.py`)
+- Text-to-speech: [Google Cloud Text-to-Speech](https://cloud.google.com/text-to-speech/docs) — the robot's voice is WaveNet, called over REST from `tts.py` and cached to disk. The old tone cues (`audio_cues.py`) and the espeak-ng / Nix TTS path (`speech.py`) are gone.
+
+### Voice setup
+
+Enable the Text-to-Speech API on your Google Cloud project, then put a key in
+`/etc/robot.env` (or `.env`):
+
+```
+GOOGLE_TTS_API_KEY=...        # falls back to GEMINI_API_KEY if unset
+```
+
+Cache the phrases the robot must be able to say with no network — do this once,
+while it does have one:
+
+```
+python tts.py --prime          # renders the static phrases into the cache
+python tts.py --info           # cache location, size, and what is primed
+python tts.py "hello there"    # audition any text
+```
+
+The robot speaks at exactly three moments, all of them while no capture stream
+is open: the battery report at boot, "voice session connected" before the
+microphone opens, and the failure announcement after the session is torn down.
+Anything else would be streamed straight back into the model as if you had said
+it. Set `ROBOT_TTS=0` to mute it entirely; see the speech section of `config.py`
+for voice, rate, pitch, output device, and cache directory.
 
 
 ## Debugging Arduino
