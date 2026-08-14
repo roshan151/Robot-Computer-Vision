@@ -18,7 +18,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
-from gestures import NO, YES, Gesturer
+from gestures import (
+    GESTURE_NO_DEGREES,
+    GESTURE_YES_METERS,
+    NO,
+    YES,
+    Gesturer,
+)
 from motion_executor import CANCELLED, DONE, FAILED, MotionExecutor
 
 MOVE_SECONDS = 0.40
@@ -121,9 +127,16 @@ def test_gesture_reaches_the_drivetrain() -> None:
 
 
 def test_gesture_shapes() -> None:
-    assert YES == [("straight", config.GESTURE_YES_METERS),
-                   ("reverse", config.GESTURE_YES_METERS)]
-    assert NO == [("left", 30.0), ("right", 60.0), ("left", 30.0)]
+    # These constants live in gestures.py, not config.py — gestures.py is the
+    # documented single source of truth for the vocabulary, and robot_tools
+    # builds its function declaration from it.  This asserted against
+    # config.GESTURE_YES_METERS, which has never existed, so the test raised
+    # AttributeError before reaching a single one of its real assertions.
+    assert YES == [("straight", GESTURE_YES_METERS),
+                   ("reverse", GESTURE_YES_METERS)]
+    assert NO == [("left", GESTURE_NO_DEGREES),
+                  ("right", GESTURE_NO_DEGREES * 2),
+                  ("left", GESTURE_NO_DEGREES)]
     net = sum(v if op == "right" else -v for op, v in NO)
     assert net == 0, "NO gesture is not net-zero"
 
@@ -177,11 +190,39 @@ def test_status_reports_motion() -> None:
         ex.cancel_all("teardown")
 
 
-def test_default_speed_is_70_percent() -> None:
-    assert config.DEFAULT_SPEED_PERCENT == 70.0
+def test_duty_from_percent_maps_and_clamps() -> None:
     from drivetrain.drivetrain_client import duty_from_percent
+
+    assert duty_from_percent(0) == 0
+    assert duty_from_percent(100) == 255
     # 70 % of 255 = 178.5; Python's round() breaks the tie to even -> 178.
-    assert duty_from_percent(config.DEFAULT_SPEED_PERCENT) == 178
+    assert duty_from_percent(70.0) == 178
+    assert duty_from_percent(80.0) == 204
+    # Out-of-range percentages clamp instead of producing an invalid duty.
+    assert duty_from_percent(-10) == 0
+    assert duty_from_percent(150) == 255
+
+
+def test_default_speed_is_in_the_characterised_band() -> None:
+    """The default speed is a calibration input, not a free parameter.
+
+    TICKS_PER_DEGREE and TURN_COAST_TICKS are both measured at whatever this
+    is set to — slip and braking momentum move with it — so changing it
+    invalidates them.  See the note beside TURN_COAST_TICKS in config.py.
+
+    This deliberately does NOT pin an exact value.  The old version asserted
+    == 70.0 and duly failed the moment the default became 80, which says
+    nothing about correctness; the band is what actually matters, because
+    outside it the calibration constants no longer describe the robot.
+    """
+    from drivetrain.drivetrain_client import duty_from_percent
+
+    assert 50.0 <= config.DEFAULT_SPEED_PERCENT <= 90.0, (
+        f"DEFAULT_SPEED_PERCENT={config.DEFAULT_SPEED_PERCENT} is outside the "
+        "range the drivetrain was calibrated over — recalibrate "
+        "TICKS_PER_DEGREE and TURN_COAST_TICKS before widening this."
+    )
+    assert 0 < duty_from_percent(config.DEFAULT_SPEED_PERCENT) <= 255
 
 
 def test_estop_seq_band_is_disjoint() -> None:

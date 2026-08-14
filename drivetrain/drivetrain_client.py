@@ -101,6 +101,11 @@ class SerialDrivetrain:
         self._motor1_count = 0
         self._motor2_count = 0
 
+        # Counts latched off the last move's D frame, or None if that move
+        # fell back to the telemetry path.  Kept apart from the live counters
+        # above, which the reader thread keeps overwriting from E frames.
+        self._last_move_counts: Optional[tuple] = None
+
         # Signed sync bias of recent moves: +1 left led, -1 right led.
         # A P-only loop nulls random drift, so a bias that keeps the SAME sign
         # across turns in both directions is not something a gain can fix —
@@ -258,26 +263,64 @@ class SerialDrivetrain:
         """
         logger.debug("%s → M:%s,%d,%d", label, direction, speed_pwm, ticks)
 
-        self._bridge.move(direction, speed_pwm, ticks)
+        with self._enc_lock:
+            self._last_move_counts = None    # never report the PREVIOUS move's
+        counts = self._bridge.move(direction, speed_pwm, ticks)
 
         # The firmware zeroes BOTH counters in beginDrive() at the start of
-        # every encoder-counted move, so the counts we read now already are
-        # this move's travel.  Subtracting a "before" snapshot would straddle
-        # that reset and produce nonsense (which is why the old reverse rows
+        # every encoder-counted move, so the counts below already are this
+        # move's travel.  Subtracting a "before" snapshot would straddle that
+        # reset and produce nonsense (which is why the old reverse rows
         # reported drift figures that had nothing to do with the robot).
         #
-        # ENC: telemetry arrives every 100 ms, so wait one interval for the
-        # post-stop reading rather than using the last mid-move sample.
-        time.sleep(config.ENCODER_SETTLE_S)
-        self._verify_encoder_delta(
-            self.get_encoder_status(), ticks, label, direction)
+        # The D frame carries those counts itself, so nothing has to be waited
+        # for.  This used to sleep ENCODER_SETTLE_S (one ENC: telemetry
+        # interval) to get a post-stop sample instead — 150 ms that sat between
+        # this move's D and the next move's M, on every step of every gesture,
+        # to recover numbers the D frame had already delivered.
+        #
+        # Getting the host off that path is what lets the next M reach
+        # armDrive() while the wheels are still ramping down, so the firmware's
+        # brake dead-time starts counting immediately at brake engage rather
+        # than after us.  The dead-time and the ramp are unchanged: this
+        # removes host latency, it does not remove any protection.
+        if counts is None:
+            # Firmware too old to put counts on the D frame.  Fall back to the
+            # telemetry path, sleep and all.
+            time.sleep(config.ENCODER_SETTLE_S)
+            status = self.get_encoder_status()
+        else:
+            left, right = counts
+            with self._enc_lock:
+                self._motor1_count = left
+                self._motor2_count = right
+                self._last_move_counts = (left, right)
+            status = {
+                "motor1_count": left,
+                "motor2_count": right,
+                "sync_error":   left - right,
+            }
+
+        self._verify_encoder_delta(status, ticks, label, direction)
 
     def move_counts(self) -> Dict[str, int]:
         """Signed encoder counts for the most recent encoder-counted move.
 
         Valid straight after a straight_m/reverse_m/left/right call, because
         the firmware resets both counters when a move begins.
+
+        Prefers the counts latched off that move's D frame over the live
+        telemetry counters.  Since the settle sleep was removed, the live
+        counters are whatever the last E frame happened to carry — which,
+        called promptly, is a mid-ramp-down sample of the same move and
+        drifts upward for ~200 ms after the move returns.  The D snapshot is
+        one fixed number for one move, which is what a caller asking for "the
+        counts for that move" means.
         """
+        with self._enc_lock:
+            latched = self._last_move_counts
+        if latched is not None:
+            return {"left": latched[0], "right": latched[1]}
         status = self.get_encoder_status()
         return {"left": status["motor1_count"], "right": status["motor2_count"]}
 

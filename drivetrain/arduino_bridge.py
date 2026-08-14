@@ -34,7 +34,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import serial  # pyserial
 
@@ -64,6 +64,22 @@ NORMAL_SEQ_MAX = int(getattr(config, "NORMAL_SEQ_MAX", ESTOP_SEQ_MIN - 1))
 
 class ProtocolError(RuntimeError):
     """The firmware rejected a command (N frame)."""
+
+
+def _done_counts(msg: Message) -> Optional[Tuple[int, int]]:
+    """Signed (left, right) counts carried by a D frame: D,<seq>,<status>,<el>,<er>.
+
+    None rather than an exception on a short or unparseable frame — a move that
+    the firmware reported OK did happen, and losing the diagnostic counts is not
+    grounds for failing it.  The caller falls back to encoder telemetry.
+    """
+    if len(msg.args) < 4:
+        return None
+    try:
+        return int(msg.args[2]), int(msg.args[3])
+    except ValueError:
+        logger.warning("D frame carried unparseable counts: %r", msg.args[2:4])
+        return None
 
 
 class ArduinoBridge:
@@ -236,12 +252,30 @@ class ArduinoBridge:
         except Exception as e:
             logger.error("emergency_stop: raw write failed: %s", e)
 
-    def move(self, direction: str, speed_pwm: int, ticks: int) -> None:
+    def move(self, direction: str, speed_pwm: int, ticks: int
+             ) -> Optional[Tuple[int, int]]:
         """Blocking encoder-counted move.
 
         Sends M, waits for the acceptance ACK, then blocks until the
         firmware reports the move finished (D frame).  Raises on firmware
         reset, rejection, non-OK completion, or timeout.
+
+        Returns the move's final signed encoder counts ``(left, right)``,
+        taken from the D frame's own payload, or None if the firmware is old
+        enough to send a D with no counts on it.
+
+        Returning them matters for latency, not for convenience: the caller
+        used to recover the same numbers by sleeping one telemetry interval
+        and reading the last E frame, and that sleep sat between this move
+        finishing and the next one being sent.  The counts were always in the
+        D frame — the sleep was buying nothing the firmware had not already
+        told us.
+
+        Caveat for anyone comparing the two: these counts are latched in
+        finishMove() at the instant softStop() is called, so they exclude the
+        ticks the robot rolls while the ramp-down completes.  That coast is
+        what TURN_COAST_TICKS exists to model; it is a few percent and none of
+        the checks in _verify_encoder_delta() are sensitive to it.
         """
         if direction not in ("F", "B", "L", "R"):
             raise ValueError(f"move: bad direction {direction!r}")
@@ -271,7 +305,7 @@ class ArduinoBridge:
                     if msg.kind == "D" and msg.seq == seq:
                         status = msg.args[1] if len(msg.args) > 1 else "?"
                         if status == "OK":
-                            return
+                            return _done_counts(msg)
                         detail = ",".join(msg.args[2:])
                         text = MOVE_FAIL_TEXT.get(
                             status, f"unrecognised status {status!r}"

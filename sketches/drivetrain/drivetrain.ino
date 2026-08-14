@@ -101,8 +101,27 @@ void resetFlagsInit(void) {
 #define RAMP_MS            6      // -> 0.5 PWM/ms: 50% speed in ~250 ms.
                                   // Slow soft-start keeps the near-stall
                                   // inrush gentle; DRV8871 ILIM caps the rest.
-#define BRAKE_MS_SAME      150    // dead-time, same direction
-#define BRAKE_MS_REVERSE   400    // dead-time when any wheel flips direction
+// Dead-time held AFTER the brake engages, before the next move starts.
+// Note where it is measured from: armDrive() sets brake_until_ms only once
+// softStop()'s ramp has reached zero, so by the time this clock starts the
+// wheels are already stopped and shorted.  The back-EMF dump is softStop()'s
+// job and it is already finished -- what is left for this constant to cover is
+// mechanical settling (gearbox backlash taking up, the chassis finishing its
+// rock) so the next move starts from a genuinely still robot.
+//
+// Reversal gets longer because backlash has to be driven out the other side
+// and the rocking is worse, not because the electrical case is different.
+//
+// Was 150/400.  Those were set when softStop() did not exist and the dead-time
+// WAS the stop, so they had to cover the wheels spinning down too; they were
+// never re-examined after the ramp took that job over.  Every step of a
+// gesture pays one of these, and NO/DANCE are reversals end to end.
+//
+// If turns start ending with a visible lurch or the chassis is still rocking
+// when the next move begins, these are the numbers to raise.  If BOOT:4
+// (brown-out) frames appear, that is NOT this -- look at RAMP_MS instead.
+#define BRAKE_MS_SAME      100    // dead-time, same direction
+#define BRAKE_MS_REVERSE   250    // dead-time when any wheel flips direction
 #define MOVE_TIMEOUT_MS    15000UL
 #define LINK_TIMEOUT_MS    1000UL // stop if no valid frame while driving
 #define TELEMETRY_MS       100UL

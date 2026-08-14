@@ -69,11 +69,20 @@ TICKS_PER_CM: float = float(os.environ.get("ROBOT_TICKS_PER_CM", "38.5"))
 #   2. Count actual degrees rotated.
 #   3. New value = current TICKS_PER_DEGREE * (360 / measured_degrees)
 #
-# 6.63 = 630 ticks / 95 deg.  At the previous value of 7.0 a 90 deg command
-# targeted 630 ticks and the robot rotated 95 deg, in BOTH directions.
-# Symmetric error, and confirmed to grow with angle -- i.e. a scale error, so
-# it belongs here rather than in TURN_COAST_TICKS below.
-TICKS_PER_DEGREE: float = float(os.environ.get("ROBOT_TICKS_PER_DEGREE", "6.63"))
+# 7.37 = 6.63 * (360 / 324), after a 360 deg command rotated 324 deg and a
+# 90 deg command rotated 81 deg.  Both UNDERSHOT by the same ratio (0.90), in
+# both directions -- proportional error, so it is scale and belongs here.  Had
+# the two shortfalls been equal in DEGREES rather than in ratio it would have
+# been coast, and belonged in TURN_COAST_TICKS below instead.
+#
+# History: 6.63 = 630 ticks / 95 deg, from the earlier OVERSHOOT at the
+# previous value of 7.0.  That correction went too far, which is what the
+# undershoot above measured; the current value re-derives from it.
+#
+# MEASURED AT 70 % SPEED.  DEFAULT_SPEED_PERCENT is now 80 -- more momentum at
+# the moment of braking means more coast, so re-run right(360) and check
+# whether the residue is still pure scale before trusting this number.
+TICKS_PER_DEGREE: float = float(os.environ.get("ROBOT_TICKS_PER_DEGREE", "7.37"))
 
 # Ticks of rotation the robot coasts AFTER the firmware hits its tick target
 # and starts braking.  Subtracted from every turn target.
@@ -111,9 +120,19 @@ TURN_COAST_TICKS: float = float(os.environ.get("ROBOT_TURN_COAST_TICKS", "0"))
 ENCODER_SYNC_WARN_RATIO: float = float(os.environ.get("ROBOT_SYNC_WARN_RATIO", "0.10"))
 
 # The firmware emits ENC: telemetry every 100 ms and zeroes both counters at
-# the start of each encoder-counted move.  After a move ACKs, wait at least one
-# telemetry interval before reading the counts, otherwise the last line
-# received is a mid-move sample and the reported travel is short.
+# the start of each encoder-counted move.  Reading the counters right after a
+# move therefore returns a mid-move sample unless you first wait one telemetry
+# interval — which is what this is.
+#
+# FALLBACK ONLY as of the D-frame change.  The firmware's own D frame carries
+# the move's final counts (D,<seq>,<status>,<el>,<er>), so _move_and_verify()
+# takes them from there and sleeps for nothing.  This is used only against
+# firmware old enough to send a D with no counts on it.
+#
+# It was never a safety margin, only a measurement wait, which is why removing
+# it from the normal path costs nothing: 150 ms of it sat between every move's
+# D and the next move's M, on every step of every gesture, to recover numbers
+# the firmware had already sent.
 ENCODER_SETTLE_S: float = float(os.environ.get("ROBOT_ENCODER_SETTLE_S", "0.15"))
 
 # ---------------------------------------------------------------------------
@@ -140,7 +159,7 @@ DEFAULT_MOVE_METERS = float(os.environ.get("ROBOT_DEFAULT_MOVE_M", "1.0"))
 # from rest, and softStop() ramps down at 2x that rate before engaging the
 # brake.  That is what protects the supply rail from the inrush/back-EMF dip
 # that resets the board.  Adding a second ramp on the host would fight it.
-DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
+DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "80.0"))
 
 # ---------------------------------------------------------------------------
 # Speech (Gemini text-to-speech)
