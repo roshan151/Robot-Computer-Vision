@@ -1,5 +1,5 @@
 """
-Spoken output — Google Cloud Text-to-Speech (WaveNet), cached to disk.
+Spoken output — Gemini text-to-speech, cached to disk.
 
 This module replaces the two things it was split across before: `audio_cues.py`
 (rendered sine tones) and `speech.py` (espeak-ng / Nix TTS). Both are gone. The
@@ -14,12 +14,25 @@ tones safe are unchanged and still the whole trick:
 
 `guard_s` covers the room's reverb tail after playback, before capture begins.
 
+One key, one host
+-----------------
+Speech goes to generativelanguage.googleapis.com with the same GEMINI_API_KEY
+the Live session uses. Google Cloud Text-to-Speech (WaveNet) would have been
+cheaper per utterance, but it is a different API on a different host: AI Studio
+keys are restricted to the Generative Language API, so it would have meant a
+second credential on a billing-enabled Cloud project. At this volume — five
+cached phrases and one battery line a boot — that trade is not worth a key.
+
+The bill that does apply is per project, not per key, and the Live session is
+on the same project. Which is one more reason the cache matters.
+
 Why the cache is not optional
 -----------------------------
-WaveNet is a network call. The two moments the robot speaks are the two moments
-the network is least trustworthy: boot (Wi-Fi may not be associated yet) and
-failure (the session just died, possibly because the link did). Anything that
-must be sayable when the network is down has to already be on disk.
+Synthesis is a network call. The two moments the robot speaks are the two
+moments the network is least trustworthy: boot (Wi-Fi may not be associated
+yet) and failure (the session just died, possibly because the link did).
+Anything that must be sayable when the network is down has to already be on
+disk.
 
 So: every synthesis is written to `TTS_CACHE_DIR` keyed by a hash of the text
 and the voice parameters, and a cache hit never touches the network. Static
@@ -30,6 +43,11 @@ Dynamic text (battery readings, error descriptions) misses the cache the first
 time it is said and is synthesized live. If that call fails, `say()` falls back
 to `fallback_text` when the caller supplied one — which is how the error path
 still speaks something useful with no network at all.
+
+The cache does a second job here that it would not have done for WaveNet. Gemini
+TTS is a language model, so the same input renders differently on each call —
+different pacing, different emphasis. Caching freezes one take, and the robot
+says "Robot online" the same way every boot instead of reinterpreting it.
 
 Playback backends, in order:
     1. sounddevice + numpy      (in-process, exact timing)
@@ -60,7 +78,15 @@ import robot_log
 
 logger = logging.getLogger(__name__)
 
-SYNTHESIZE_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+GENERATE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+)
+
+# Statuses worth trying again. 500 is the documented random failure mode of the
+# TTS models (they occasionally emit text tokens instead of audio and the server
+# rejects its own response); 429/503 are load. A 400 or 403 is a configuration
+# mistake and retrying it just makes the same mistake twice.
+RETRY_STATUSES = frozenset({429, 500, 503})
 
 # Phrases the robot must be able to say with no network. `prime()` renders
 # these; after one successful boot they live in the cache forever.
@@ -137,8 +163,9 @@ def available() -> bool:
 
 
 def _wav_bytes(pcm_or_wav: bytes) -> bytes:
-    """Google returns LINEAR16 already wrapped in a RIFF header. Trust it if
-    the header is there, wrap it ourselves if a future encoding is not."""
+    """Gemini returns headerless 24 kHz 16-bit mono PCM, so we add the RIFF
+    header ourselves. The check is for the day an endpoint returns a real WAV —
+    wrapping one twice produces a file that plays four bytes of noise."""
     if pcm_or_wav[:4] == b"RIFF":
         return pcm_or_wav
     buf = io.BytesIO()
@@ -202,66 +229,125 @@ def _cache_dir() -> Path:
 
 
 def _cache_path(text: str) -> Path:
-    """Key on the voice parameters too — changing the voice must not serve
-    audio rendered in the old one."""
+    """Key on everything that changes the audio, not just the words.
+
+    Model, voice and style direction all alter the rendering, so a change to
+    any of them has to miss the cache. Otherwise switching voices leaves the
+    robot speaking in the old one until someone thinks to delete the directory.
+    """
     key = "|".join((
         text,
-        config.TTS_LANGUAGE,
+        config.TTS_MODEL,
         config.TTS_VOICE,
-        f"{config.TTS_SPEAKING_RATE:g}",
-        f"{config.TTS_PITCH:g}",
+        config.TTS_STYLE,
         str(config.TTS_SAMPLE_RATE),
     ))
     return _cache_dir() / f"{hashlib.sha1(key.encode()).hexdigest()}.wav"
 
 
+def _prompt(text: str) -> str:
+    """`Say clearly and calmly: Robot online.`
+
+    The directive prefix is the shape Google's single-speaker example uses, and
+    it matters for more than tone: a bare transcript can fail to trigger the
+    speech classifier, which either rejects the request as PROHIBITED_CONTENT
+    or — worse, because it is silent about it — makes the model read the text
+    as if it were an instruction. Keep the style short for the same reason.
+    """
+    style = config.TTS_STYLE.strip().rstrip(":")
+    return f"{style}: {text}" if style else text
+
+
+def _extract_audio(payload: dict) -> Optional[bytes]:
+    """Pull the first audio blob out of a generateContent response.
+
+    Written as a walk rather than a fixed path because the audio has sat at
+    two different depths across API revisions (`inlineData` under a part, and
+    `output_audio` on the newer Interactions shape). A missing key here would
+    present as a mute robot with a 200 in the log, which is the least
+    debuggable failure this module has.
+    """
+    stack = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for k in ("inlineData", "inline_data", "output_audio", "outputAudio"):
+                blob = node.get(k)
+                if isinstance(blob, dict) and blob.get("data"):
+                    return base64.b64decode(blob["data"])
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return None
+
+
 def _synthesize(text: str) -> Optional[bytes]:
-    """One WaveNet request. Returns WAV bytes, or None on any failure."""
+    """One Gemini TTS request, with retries. WAV bytes, or None on failure."""
     try:
-        api_key = config.require("GOOGLE_TTS_API_KEY")
+        api_key = config.require("GEMINI_API_KEY")
     except Exception as e:
         robot_log.event("audio.error", logging.WARNING, stage="tts-auth",
                         err=f"{type(e).__name__}: {e}",
-                        fix="set GOOGLE_TTS_API_KEY (or GEMINI_API_KEY) in /etc/robot.env")
+                        fix="set GEMINI_API_KEY in /etc/robot.env")
         return None
 
     try:
         import requests  # imported here so config-only tools need no network stack
+    except ImportError as e:
+        robot_log.event("audio.error", logging.WARNING, stage="tts-import",
+                        err=str(e), fix="pip install requests")
+        return None
 
-        resp = requests.post(
-            SYNTHESIZE_URL,
-            params={"key": api_key},
-            json={
-                "input": {"text": text},
-                "voice": {
-                    "languageCode": config.TTS_LANGUAGE,
-                    "name": config.TTS_VOICE,
-                },
-                "audioConfig": {
-                    "audioEncoding": "LINEAR16",
-                    "sampleRateHertz": config.TTS_SAMPLE_RATE,
-                    "speakingRate": config.TTS_SPEAKING_RATE,
-                    "pitch": config.TTS_PITCH,
+    url = GENERATE_URL.format(model=config.TTS_MODEL)
+    body = {
+        "contents": [{"parts": [{"text": _prompt(text)}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": config.TTS_VOICE},
                 },
             },
-            timeout=config.TTS_TIMEOUT_S,
-        )
-        if resp.status_code != 200:
-            # Body is quoted rather than parsed: a 403 from Google is usually
-            # "API not enabled on this project", and that sentence is the fix.
-            robot_log.event("audio.error", logging.WARNING, stage="tts-http",
-                            status=resp.status_code, err=resp.text[:300])
-            return None
-        audio = resp.json().get("audioContent")
-        if not audio:
-            robot_log.event("audio.error", logging.WARNING, stage="tts-http",
-                            err="response had no audioContent")
-            return None
-        return _wav_bytes(base64.b64decode(audio))
-    except Exception as e:
-        robot_log.event("audio.error", logging.WARNING, stage="tts-synth",
-                        err=f"{type(e).__name__}: {e}")
-        return None
+        },
+    }
+
+    for attempt in range(1, config.TTS_RETRIES + 2):
+        try:
+            resp = requests.post(
+                url,
+                headers={"x-goog-api-key": api_key,
+                         "Content-Type": "application/json"},
+                json=body,
+                timeout=config.TTS_TIMEOUT_S,
+            )
+            if resp.status_code == 200:
+                audio = _extract_audio(resp.json())
+                if audio:
+                    return _wav_bytes(audio)
+                # 200 with no audio is the documented "returned text tokens
+                # instead" case leaking through. Retryable, and the body is
+                # logged because it usually contains the model's excuse.
+                robot_log.event("audio.error", logging.WARNING,
+                                stage="tts-response", attempt=attempt,
+                                err="200 with no audio in the response",
+                                body=resp.text[:300])
+            else:
+                # Body quoted, not parsed: Google's message names the fix more
+                # often than the status does ("model not found" for a non-TTS
+                # model id, "API key not valid", quota exceeded, and so on).
+                robot_log.event("audio.error", logging.WARNING, stage="tts-http",
+                                status=resp.status_code, attempt=attempt,
+                                model=config.TTS_MODEL, err=resp.text[:300])
+                if resp.status_code not in RETRY_STATUSES:
+                    return None                 # config error; retrying repeats it
+        except Exception as e:
+            robot_log.event("audio.error", logging.WARNING, stage="tts-synth",
+                            attempt=attempt, err=f"{type(e).__name__}: {e}")
+
+        if attempt <= config.TTS_RETRIES:
+            time.sleep(min(2 ** (attempt - 1) * 0.5, 4.0))
+
+    return None
 
 
 def render(text: str, *, allow_network: bool = True) -> Optional[bytes]:
@@ -401,7 +487,9 @@ if __name__ == "__main__":
         print(json.dumps(cache_info(), indent=2))
         raise SystemExit(0)
 
+    print(f"model   : {config.TTS_MODEL}")
     print(f"voice   : {config.TTS_VOICE}")
+    print(f"style   : {config.TTS_STYLE or '(none)'}")
     print(f"playback: {backend()}")
 
     if args.prime:

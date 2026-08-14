@@ -95,7 +95,7 @@ def main() -> None:
         robot_log.event("audio.error", logging.WARNING, stage="tts-prime",
                         primed=primed,
                         err="some static phrases are not cached",
-                        fix="check GOOGLE_TTS_API_KEY and network, then run "
+                        fix="check GEMINI_API_KEY and network, then run "
                             "`python tts.py --prime`")
 
     # Battery next, and deliberately before anything opens the microphone: this

@@ -143,7 +143,7 @@ DEFAULT_MOVE_METERS = float(os.environ.get("ROBOT_DEFAULT_MOVE_M", "1.0"))
 DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
 
 # ---------------------------------------------------------------------------
-# Speech (Google Cloud Text-to-Speech, WaveNet)
+# Speech (Gemini text-to-speech)
 # ---------------------------------------------------------------------------
 # The robot runs headless, so its voice is the only channel it has. It speaks
 # at exactly two moments — session up, session dead — plus the battery report,
@@ -151,15 +151,39 @@ DEFAULT_SPEED_PERCENT = float(os.environ.get("ROBOT_DEFAULT_SPEED_PCT", "70.0"))
 # why that ordering (speak first, THEN open the microphone) is the whole trick.
 TTS_ENABLED = os.environ.get("ROBOT_TTS", "1") not in ("0", "false", "no")
 
-# WaveNet voices are billed per character and are the reason this replaced
-# espeak: the failure path is read out loud to someone across a room, and
-# intelligibility there is worth more than the fraction of a cent.
-TTS_LANGUAGE = os.environ.get("ROBOT_TTS_LANGUAGE", "en-US")
-TTS_VOICE = os.environ.get("ROBOT_TTS_VOICE", "en-US-Wavenet-D")
-TTS_SPEAKING_RATE = float(os.environ.get("ROBOT_TTS_RATE", "1.0"))
-TTS_PITCH = float(os.environ.get("ROBOT_TTS_PITCH", "0.0"))
+# Gemini's own TTS, on generativelanguage.googleapis.com — the same host and
+# the same GEMINI_API_KEY the Live session already uses. Cloud Text-to-Speech
+# (WaveNet) would need a second key on a billing-enabled Cloud project, because
+# AI Studio keys are restricted to the Generative Language API.
+#
+# It must be a TTS model variant. Plain `gemini-2.5-flash` is text-out only and
+# rejects responseModalities=["AUDIO"] — the audio suffix is not cosmetic.
+TTS_MODEL = os.environ.get("ROBOT_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+
+# One of the 30 prebuilt voices. Kore (firm) and Charon (informative) both read
+# terse status lines well; Iapetus (clear) is the pick if the room is noisy.
+TTS_VOICE = os.environ.get("ROBOT_TTS_VOICE", "Kore")
+
+# Gemini TTS has no rate or pitch dials — delivery is directed in natural
+# language instead. The prefix is applied as "<style>: <text>", which is the
+# shape Google's own single-speaker example uses; a bare transcript with no
+# directive can trip the speech classifier.
+#
+# Keep it short and behavioural. Long director's notes are the documented cause
+# of the model reading the instructions out loud instead of following them.
+TTS_STYLE = os.environ.get("ROBOT_TTS_STYLE", "Say clearly and calmly")
+
+# The model returns raw 24 kHz 16-bit mono PCM, which tts.py wraps in a WAV
+# header. Changing this does not resample anything — it only changes the header
+# we write, so a wrong value plays back at the wrong pitch.
 TTS_SAMPLE_RATE = int(os.environ.get("ROBOT_TTS_SAMPLE_RATE", "24000"))
 TTS_DEVICE = os.environ.get("ROBOT_TTS_DEVICE", "")
+
+# Google documents that TTS models occasionally return text tokens instead of
+# audio and fail the request with a 500, at random, in a small share of calls,
+# and says to retry. Cheap here: the only live calls are the battery line at
+# boot and a novel error description.
+TTS_RETRIES = int(os.environ.get("ROBOT_TTS_RETRIES", "2"))
 
 # Synthesis is a network call, and the two moments the robot speaks are the two
 # moments the network is least trustworthy: boot, and just after the session
@@ -338,12 +362,10 @@ def _first_env(*names: str) -> str:
 
 # Google Gemini — the only voice backend.
 GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-# Google Cloud Text-to-Speech (WaveNet) — the robot's voice. Falls back to the
-# Gemini key because both are Google API keys and a single-project setup is the
-# common case; give it its own key when TTS is enabled on a different project,
-# or when you want the two billed separately.
-GOOGLE_TTS_API_KEY = _first_env(
-    "GOOGLE_TTS_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+# The robot's voice uses this same key: Gemini TTS lives on
+# generativelanguage.googleapis.com, so there is no second credential and no
+# Cloud project to enable. Note that rate limits are per PROJECT — the Live
+# session and the spoken announcements draw on the same quota.
 
 # Bluetooth headset (see check_bt_audio.sh).
 BT_MAC = os.environ.get("BT_MAC", "")
@@ -351,7 +373,6 @@ BT_MAC = os.environ.get("BT_MAC", "")
 # Every name here is treated as sensitive by the log redactor.
 SECRET_NAMES = (
     "GEMINI_API_KEY",
-    "GOOGLE_TTS_API_KEY",
 )
 
 # ---------------------------------------------------------------------------
@@ -492,12 +513,10 @@ def _first_env(*names: str) -> str:
 
 # Google Gemini — the only voice backend.
 GEMINI_API_KEY = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-# Google Cloud Text-to-Speech (WaveNet) — the robot's voice. Falls back to the
-# Gemini key because both are Google API keys and a single-project setup is the
-# common case; give it its own key when TTS is enabled on a different project,
-# or when you want the two billed separately.
-GOOGLE_TTS_API_KEY = _first_env(
-    "GOOGLE_TTS_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+# The robot's voice uses this same key: Gemini TTS lives on
+# generativelanguage.googleapis.com, so there is no second credential and no
+# Cloud project to enable. Note that rate limits are per PROJECT — the Live
+# session and the spoken announcements draw on the same quota.
 
 # Bluetooth headset (see check_bt_audio.sh).
 BT_MAC = os.environ.get("BT_MAC", "")
@@ -505,7 +524,6 @@ BT_MAC = os.environ.get("BT_MAC", "")
 # Every name here is treated as sensitive by the log redactor.
 SECRET_NAMES = (
     "GEMINI_API_KEY",
-    "GOOGLE_TTS_API_KEY",
 )
 
 # ---------------------------------------------------------------------------

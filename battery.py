@@ -48,7 +48,7 @@ class BatteryState:
     def phrase(self) -> str:
         """Spoken form. Numbers are rounded — nobody needs two decimals.
 
-        Written as plain digits: WaveNet reads "4.1 volts" correctly, so the
+        Written as plain digits: Gemini TTS reads "4.1 volts" correctly, so the
         old "4 point 1" spelling that espeak needed is gone. Keeping it would
         now make the robot enunciate the workaround.
         """
@@ -177,6 +177,6 @@ if __name__ == "__main__":
     print(f"charging: {st.charging}")
     print(f"phrase  : {st.phrase()}")
     if not args.quiet:
-        print(f"voice   : {config.TTS_VOICE}")
+        print(f"voice   : {config.TTS_VOICE} ({config.TTS_MODEL})")
         print(f"playback: {tts.backend()}")
         announce(st)

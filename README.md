@@ -166,16 +166,20 @@ Legacy entry name `voice_controls_v2.py` may still exist under `deprecated/`; pr
 ## Resources
 
 - Speech recognition overview: [Real-time speech-to-text on Raspberry Pi](https://atsss.medium.com/real-time-speech-to-text-on-raspberry-pi-and-python-4be8c347a8fc)  
-- Text-to-speech: [Google Cloud Text-to-Speech](https://cloud.google.com/text-to-speech/docs) — the robot's voice is WaveNet, called over REST from `tts.py` and cached to disk. The old tone cues (`audio_cues.py`) and the espeak-ng / Nix TTS path (`speech.py`) are gone.
+- Text-to-speech: [Gemini TTS](https://ai.google.dev/gemini-api/docs/speech-generation) — the robot's voice, called over REST from `tts.py` and cached to disk. The old tone cues (`audio_cues.py`) and the espeak-ng / Nix TTS path (`speech.py`) are gone.
 
 ### Voice setup
 
-Enable the Text-to-Speech API on your Google Cloud project, then put a key in
-`/etc/robot.env` (or `.env`):
+No extra credential: Gemini TTS is on the same host and uses the same
+`GEMINI_API_KEY` as the Live session. Cloud Text-to-Speech (WaveNet) is cheaper
+per utterance but needs a second key on a billing-enabled Cloud project, since
+AI Studio keys are restricted to the Generative Language API.
 
-```
-GOOGLE_TTS_API_KEY=...        # falls back to GEMINI_API_KEY if unset
-```
+Two things follow from sharing the key. Rate limits are per *project*, so
+announcements and the Live session draw on the same quota — which is the main
+reason everything is cached. And the model must be a TTS variant:
+`gemini-2.5-flash-preview-tts`, not `gemini-2.5-flash`, which is text-out only
+and rejects the audio response modality.
 
 Cache the phrases the robot must be able to say with no network — do this once,
 while it does have one:
@@ -191,7 +195,12 @@ is open: the battery report at boot, "voice session connected" before the
 microphone opens, and the failure announcement after the session is torn down.
 Anything else would be streamed straight back into the model as if you had said
 it. Set `ROBOT_TTS=0` to mute it entirely; see the speech section of `config.py`
-for voice, rate, pitch, output device, and cache directory.
+for model, voice, style, output device, and cache directory.
+
+Delivery is directed in natural language rather than with rate/pitch dials —
+`ROBOT_TTS_STYLE` is prepended as `"<style>: <text>"`. Keep it short: long
+director's notes are the documented cause of the model reading the instructions
+aloud instead of following them.
 
 
 ## Debugging Arduino
