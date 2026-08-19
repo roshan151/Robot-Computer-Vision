@@ -1,9 +1,0 @@
-pyserial>=3.5
-# Google Cloud Text-to-Speech is called over plain REST from tts.py, so
-# `requests` is the entire TTS dependency — no client library, no espeak-ng
-# apt package, no Nix TTS model directory.
-requests>=2.28.0
-python-dotenv>=1.0.0
-google-genai>=1.0.0
-SpeechRecognition>=3.10.0
-sounddevice>=0.4.6

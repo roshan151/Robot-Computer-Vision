@@ -1,0 +1,37 @@
+# Everything you actually tune. robot_core/settings.py still holds the
+# constants and their environment-variable fallbacks, so Layer A runs
+# standalone; this file is what the ROS graph uses and what you edit.
+#
+# The calibration pair can also be changed live, which is the point:
+#   ros2 param set /drivetrain ticks_per_cm 103.4
+# It is refused while a move is running, because rescaling the tick target of a
+# move already in flight would silently change how far it goes.
+
+/drivetrain:
+  ros__parameters:
+    # Set this to whatever the Arduino enumerates as. Write a udev rule and use
+    # a stable name (/dev/arduino) before you plug in a second USB serial
+    # device — the numbering swaps on reboot and the robot will happily send
+    # drive commands to the wrong one.
+    serial_port: "/dev/ttyUSB0"
+    baud: 115200
+
+    # Calibration. Both scale the TARGET, not the measurement, so neither can
+    # make a move stop early — short travel is traction or a lost encoder
+    # channel, never calibration. See the calibration section of the README.
+    ticks_per_cm: 100.0
+    ticks_per_degree: 8.0
+
+    # The hard limit on a single move. Enforced in the goal callback, so the
+    # model cannot talk its way past it.
+    max_drive_m: 5.0
+    move_timeout_s: 20.0
+
+    encoder_publish_hz: 10.0
+
+/voice:
+  ros__parameters:
+    # Placeholder: the Live session still reads model, prompt and audio device
+    # from robot_core/settings.py and the environment. Moving those here is a
+    # later tidy-up, not a Phase 3 requirement.
+    {}

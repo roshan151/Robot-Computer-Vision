@@ -45,12 +45,13 @@ def _stub_genai() -> None:
 
 _stub_genai()
 
-import config  # noqa: E402
-from robot_tools import RobotTools, declarations  # noqa: E402
+from robot_core import settings  # noqa: E402
+from robot_core.live.tools import RobotTools, declarations  # noqa: E402
+from robot_core.motion import LocalMotion  # noqa: E402
 
 
 class FakeMove:
-    """Blocking moves, releasable only by the out-of-band brake."""
+    """SerialDrivetrain stand-in: blocking moves, released only by the brake."""
 
     def __init__(self, seconds: float = 0.2) -> None:
         self.calls: list = []
@@ -80,8 +81,11 @@ def run(coro):
 
 
 def tools(seconds=0.2):
+    """(drivetrain, backend, tools) — the backend owns the executor and is what
+    the caller closes, mirroring how the ROS voice node holds its clients."""
     move = FakeMove(seconds)
-    return move, RobotTools(move)
+    motion = LocalMotion(move)
+    return move, motion, RobotTools(motion)
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +93,7 @@ def tools(seconds=0.2):
 # --------------------------------------------------------------------------- #
 
 def test_every_tool_returns_immediately() -> None:
-    move, t = tools(seconds=3.0)
+    move, motion, t = tools(seconds=3.0)
     try:
         for name, args in [("drive", {"meters": 2.0}),
                            ("turn", {"degrees": 90}),
@@ -100,17 +104,17 @@ def test_every_tool_returns_immediately() -> None:
             took = time.monotonic() - t0
             assert took < 0.10, f"{name} blocked the loop for {took:.2f}s"
     finally:
-        t.executor.cancel_all("teardown")
-        t.close()
+        motion.executor.cancel_all("teardown")
+        motion.close()
 
 
 def test_a_running_move_does_not_stall_the_loop() -> None:
-    move, t = tools(seconds=0.6)
+    move, motion, t = tools(seconds=0.6)
 
     async def scenario():
         await t.dispatch("drive", {"meters": 1.0})
         ticks = 0
-        while t.executor.status()["moving"] or t.executor.status()["queue_depth"]:
+        while motion.executor.status()["moving"] or motion.executor.status()["queue_depth"]:
             await asyncio.sleep(0.02)
             ticks += 1
             if ticks > 200:
@@ -120,7 +124,7 @@ def test_a_running_move_does_not_stall_the_loop() -> None:
     try:
         assert run(scenario()) > 10, "loop barely ran during a 0.6 s move"
     finally:
-        t.close()
+        motion.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -128,26 +132,26 @@ def test_a_running_move_does_not_stall_the_loop() -> None:
 # --------------------------------------------------------------------------- #
 
 def test_commands_execute_in_order() -> None:
-    move, t = tools(seconds=0.15)
+    move, motion, t = tools(seconds=0.15)
     try:
         run(t.dispatch("drive", {"meters": 1.0}))
         run(t.dispatch("turn", {"degrees": 90}))
         run(t.dispatch("drive", {"meters": -1.0}))
-        assert t.executor.drain(timeout=5.0)
+        assert motion.executor.drain(timeout=5.0)
         assert move.calls == [("straight", 1.0), ("right", 90.0), ("reverse", 1.0)]
     finally:
-        t.close()
+        motion.close()
 
 
 def test_queue_depth_is_reported_back_to_the_model() -> None:
-    move, t = tools(seconds=1.0)
+    move, motion, t = tools(seconds=1.0)
     try:
         run(t.dispatch("drive", {"meters": 1.0}))
         r = run(t.dispatch("turn", {"degrees": 90}))
         assert r["ok"] and "queued" in r and r["queue_depth"] >= 0
     finally:
-        t.executor.cancel_all("teardown")
-        t.close()
+        motion.executor.cancel_all("teardown")
+        motion.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +159,7 @@ def test_queue_depth_is_reported_back_to_the_model() -> None:
 # --------------------------------------------------------------------------- #
 
 def test_stop_empties_the_queue_and_interrupts() -> None:
-    move, t = tools(seconds=5.0)
+    move, motion, t = tools(seconds=5.0)
     try:
         run(t.dispatch("drive", {"meters": 3.0}))     # starts
         run(t.dispatch("turn", {"degrees": 90}))      # queued
@@ -171,11 +175,11 @@ def test_stop_empties_the_queue_and_interrupts() -> None:
         assert move.estops >= 1, "emergency_stop never fired"
         assert len(r["cancelled"]) >= 2, f"queue not emptied: {r}"
 
-        assert t.executor.drain(timeout=3.0)
+        assert motion.executor.drain(timeout=3.0)
         assert move.calls == [("straight", 3.0)], \
             f"a cancelled job still reached the drivetrain: {move.calls}"
     finally:
-        t.close()
+        motion.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -183,47 +187,47 @@ def test_stop_empties_the_queue_and_interrupts() -> None:
 # --------------------------------------------------------------------------- #
 
 def test_signs_map_to_directions() -> None:
-    move, t = tools(seconds=0.05)
+    move, motion, t = tools(seconds=0.05)
     try:
         run(t.dispatch("drive", {"meters": -0.5}))
         run(t.dispatch("turn", {"degrees": -45}))
-        assert t.executor.drain(timeout=3.0)
+        assert motion.executor.drain(timeout=3.0)
         assert move.calls == [("reverse", 0.5), ("left", 45.0)]
     finally:
-        t.close()
+        motion.close()
 
 
 def test_drive_limit_is_enforced_in_code() -> None:
-    move, t = tools(seconds=0.05)
+    move, motion, t = tools(seconds=0.05)
     try:
-        r = run(t.dispatch("drive", {"meters": config.MAX_DRIVE_METERS + 1}))
+        r = run(t.dispatch("drive", {"meters": settings.MAX_DRIVE_METERS + 1}))
         assert r["ok"] is False and "limit" in r["error"]
-        t.executor.drain(timeout=0.5)
+        motion.executor.drain(timeout=0.5)
         assert move.calls == [], "an over-limit drive was still queued"
     finally:
-        t.close()
+        motion.close()
 
 
 def test_bad_arguments_become_results_not_crashes() -> None:
-    move, t = tools(seconds=0.05)
+    move, motion, t = tools(seconds=0.05)
     try:
         for name, args in [("drive", {}), ("turn", {"degrees": "sideways"}),
                            ("nonsense", {}), ("answer", {"value": "maybe"})]:
             assert run(t.dispatch(name, args))["ok"] is False, (name, args)
     finally:
-        t.close()
+        motion.close()
 
 
 def test_gesture_yields_to_real_motion() -> None:
-    move, t = tools(seconds=0.5)
+    move, motion, t = tools(seconds=0.5)
     try:
         run(t.dispatch("drive", {"meters": 1.0}))
         time.sleep(0.1)
         r = run(t.dispatch("answer", {"value": "yes"}))
         assert r["gestured"] is False, "nodded while driving"
     finally:
-        t.executor.cancel_all("teardown")
-        t.close()
+        motion.executor.cancel_all("teardown")
+        motion.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -240,13 +244,13 @@ def test_four_tools_and_stop_takes_no_arguments() -> None:
 def test_no_tool_awaits_the_drivetrain() -> None:
     """Guards the fix at the source level: nothing may re-introduce a blocking
     await into the dispatch path."""
-    src = (REPO / "robot_tools.py").read_text()
+    src = (REPO / "robot_core" / "live" / "tools.py").read_text()
     assert "to_thread" not in src, "a tool is blocking on the drivetrain again"
-    assert "MotionExecutor" in src, "tools are not using the FIFO worker"
+    assert "MotionBackend" in src, "tools bypassed the non-blocking motion backend"
 
 
 def test_receive_loop_stall_is_measured() -> None:
-    src = (REPO / "live_agent.py").read_text()
+    src = (REPO / "robot_core" / "live" / "agent.py").read_text()
     assert "recv-stall" in src, "no telemetry for a stalled receive loop"
     assert "send-slow" in src, "no telemetry for a slow uplink send"
 

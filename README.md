@@ -6,24 +6,33 @@ Raspberry Pi–based robot with **computer vision**, **voice + LLM planning**, a
 
 ## Repository layout
 
+Two layers, and the boundary is the point. `robot_core/` is the robot as plain
+Python and imports **no ROS**; `ros2_ws/` is thin nodes that call into it. That
+keeps the tests runnable on a laptop, stops a node quietly growing hardware
+logic, and means deleting `ros2_ws/` still leaves a working robot. There is a
+test for it (`tests/test_layering.py`).
+
 | Path | Purpose |
 |------|--------|
-| `sketches/drivetrain/drivetrain.ino` | Arduino sketch — upload to the board (motors, encoders, serial protocol). Its header comment is the authoritative pinout. |
-| `sketches/test-*.ino` | Standalone diagnostic sketches (motors only, encoders only, debug) |
-| `config.py` | Serial port, baud, motion/vision heuristics, environment variable defaults |
-| `arduino_bridge.py` / `serial_protocol.py` | PySerial, line protocol, heartbeat `PING` |
-| `drivetrain_client.py` | `SerialDrivetrain` — timed moves and intent methods |
-| `movement_adapter.py` / `movement_context.py` | Voice/planner → `SerialDrivetrain`; movement history / backtrack |
-| `vision_client.py` | Camera capture (Picamera2 or OpenCV) + HTTP calls to the vision API |
-| `coordinator.py` | Optional **vision guardian** — stop if selected YOLO classes appear while moving |
-| `voice_session.py` | Speech → OpenAI (JSON plan) → movement + vision steps |
-| `brain_loop.py` | Simple ~10 Hz OpenCV loop → intent commands (no voice) |
-| `run_robot.py` | Main entry: full stack or `--brain-only` |
-| `prompts_and_glossary.py` | LLM system prompt and command → method mapping for voice |
-| `deprecated/` | Older Pi-GPIO `drivetrain`, legacy vision/voice files (reference only) |
-| `deprecated/Vision/` | FastAPI + YOLO `POST /detect_objects:frame` service |
-
----
+| `firmware/drivetrain/drivetrain.ino` | Arduino sketch — motors, encoders, PID, serial protocol. Its header comment is the authoritative pinout |
+| **`robot_core/`** | **Layer A — no ROS imports, ever** |
+| `robot_core/settings.py` | Serial port, baud, calibration, timeouts, environment-variable defaults |
+| `robot_core/drivetrain/` | Framed serial protocol, the Arduino bridge, and `SerialDrivetrain` |
+| `robot_core/motion_executor.py` | FIFO worker that owns the link; cancellation that interrupts a move in flight |
+| `robot_core/motion.py` | `MotionBackend` — the seam the tools call, and `LocalMotion`, its no-ROS implementation |
+| `robot_core/gestures.py` | The gesture vocabulary. Single source of truth for what the model may ask for |
+| `robot_core/live/agent.py` | The Gemini Live session: mic uplink, event pump, result feedback |
+| `robot_core/live/tools.py` | `drive` / `turn` / `stop` / `answer`, as Live function declarations |
+| `robot_core/speech.py` | Gemini TTS over REST, cached to disk |
+| `robot_core/run.py` | Run everything **without** ROS — the bench path and the fallback |
+| **`ros2_ws/src/`** | **Layer B — thin nodes** |
+| `robot_interfaces/` | `Drive.action`, `Turn.action`, `Encoders.msg` |
+| `robot_drivetrain/` | Action servers, the e-stop service, encoder telemetry |
+| `robot_voice/` | The Live session as a node, plus `RosMotion` (MotionBackend over actions) |
+| `robot_bringup/` | Launch files, `robot.yaml`, and the one-process node host |
+| `tests/` | Unit tests — no hardware, no ROS needed |
+| `tests/hardware/` | `check_*.py` diagnostics that need a real robot |
+| `docs/PLAN.md` | The migration and expansion plan. Start here |
 
 ## Hardware (summary)
 
@@ -46,35 +55,32 @@ Longer power/wiring notes from your build are still valid; keep motor supply sep
 
 ---
 
-## Installation (Raspberry Pi)
+## Installation
 
-From the **repository root** (this folder):
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-**Pi-only camera** (when using Picamera2):
+**Layer A** (works anywhere — laptop included):
 
 ```bash
-# Follow Raspberry Pi OS docs for picamera2 / libcamera
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[voice]"
+pytest                      # 49 tests, no hardware required
 ```
 
-**Vision server** (YOLO API used by `vision_client.py`):
+**Layer B** (on the Pi) needs ROS 2 Jazzy. See `docs/PLAN.md` Part 3 for the
+apt setup, then:
 
 ```bash
-pip install -r requirements-vision.txt
+cd ros2_ws && colcon build --symlink-install && source install/setup.bash
 ```
 
----
+Only `robot_interfaces` actually compiles; `--symlink-install` means Python
+edits take effect without rebuilding. Rebuild when you change a `.action` or
+`.msg`.
 
 ## Configuration
 
 ### Environment variables
 
-All can be set in a `.env` file (loaded by `voice_session`) or exported in the shell.
+All can be set in a `.env` file, in `/etc/robot.env` for the systemd service, or exported in the shell. Anything in `robot.yaml` overrides the corresponding default when running under ROS.
 
 | Variable | Purpose |
 |----------|--------|
@@ -88,14 +94,14 @@ All can be set in a `.env` file (loaded by `voice_session`) or exported in the s
 
 ### Vision API URL
 
-Default in `config.py` is `http://127.0.0.1:8080/detect_objects:frame`.  
+Default in `robot_core/settings.py` is `http://127.0.0.1:8080/detect_objects:frame`.  
 If the vision service runs on another machine, set `VISION_SERVICE_URL` to that host.
 
 ---
 
 ## Arduino firmware
 
-1. Open `sketches/drivetrain/drivetrain.ino` in the Arduino IDE.  
+1. Open `firmware/drivetrain/drivetrain.ino` in the Arduino IDE.  
 2. Adjust **pin defines** at the top for your motor driver and encoders. The
    header comment of that file is the authoritative pinout — see
    [Motor driver wiring](#motor-driver-wiring-2-drv8871) and
@@ -108,47 +114,29 @@ You can test upload and serial **without motors connected**; encoder lines use i
 
 ---
 
-## Running the vision API (YOLO)
-
-From the repository root:
-
-```bash
-cd deprecated
-uvicorn Vision.app:app --host 0.0.0.0 --port 8080
-```
-
-The Pi’s `vision_client.py` posts JSON: `{ "image": "<base64>", "objects": ["plant", ...] }` and expects `{ "response": true/false }`.
-
-For a **remote** PC running Docker/YOLO, point `VISION_SERVICE_URL` at that host.
-
----
-
 ## Running the robot stack
 
-Always run these commands from the **repository root** so imports resolve:
-
 ```bash
-source .venv/bin/activate
-python run_robot.py
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+ros2 launch robot_bringup command.launch.py
 ```
 
-Options:
+Two processes on purpose: the voice node holds an always-open microphone and an
+asyncio loop, the robot process holds the serial link and the e-stop. Separate
+processes mean separate GILs, so a stall in the conversation cannot delay a stop.
 
-| Flag | Meaning |
-|------|--------|
-| `--no-guardian` | Do not start the vision guardian (ignore `VISION_HALT_OBJECTS` for stopping) |
-| `--brain-only` | Only `brain_loop.py` — OpenCV / stub decisions → Arduino (no voice/GPT) |
+| Want | Command |
+|------|---------|
+| Drivetrain only, no mic or API key | `ros2 launch robot_bringup command.launch.py voice:=false` |
+| Drive it by hand | `ros2 action send_goal /drive robot_interfaces/action/Drive "{meters: 0.5}" --feedback` |
+| Stop it | `ros2 service call /estop std_srvs/srv/Trigger` |
+| Watch the encoders | `ros2 topic echo /encoders` |
+| Calibrate live | `ros2 param set /drivetrain ticks_per_cm 103.4` |
+| No ROS at all | `python -m robot_core.run` |
 
-Shortcut equivalent:
-
-```bash
-python brain_loop.py
-```
-
-Legacy entry name `voice_controls_v2.py` may still exist under `deprecated/`; prefer `python run_robot.py`.
-
----
-
+As a service: `start_robot.sh` sources both overlays and launches the graph;
+`robot-voice.service` calls it.
 
 ## Robot images
 
@@ -166,7 +154,7 @@ Legacy entry name `voice_controls_v2.py` may still exist under `deprecated/`; pr
 ## Resources
 
 - Speech recognition overview: [Real-time speech-to-text on Raspberry Pi](https://atsss.medium.com/real-time-speech-to-text-on-raspberry-pi-and-python-4be8c347a8fc)  
-- Text-to-speech: [Gemini TTS](https://ai.google.dev/gemini-api/docs/speech-generation) — the robot's voice, called over REST from `tts.py` and cached to disk. The old tone cues (`audio_cues.py`) and the espeak-ng / Nix TTS path (`speech.py`) are gone.
+- Text-to-speech: [Gemini TTS](https://ai.google.dev/gemini-api/docs/speech-generation) — the robot's voice, called over REST from `robot_core/speech.py` and cached to disk. The old tone cues (`audio_cues.py`) and the espeak-ng / Nix TTS path (`speech.py`) are gone.
 
 ### Voice setup
 
@@ -185,16 +173,16 @@ Cache the phrases the robot must be able to say with no network — do this once
 while it does have one:
 
 ```
-python tts.py --prime          # renders the static phrases into the cache
-python tts.py --info           # cache location, size, and what is primed
-python tts.py "hello there"    # audition any text
+python -m robot_core.speech --prime          # renders the static phrases into the cache
+python -m robot_core.speech --info           # cache location, size, and what is primed
+python -m robot_core.speech "hello there"    # audition any text
 ```
 
 The robot speaks at exactly three moments, all of them while no capture stream
 is open: the battery report at boot, "voice session connected" before the
 microphone opens, and the failure announcement after the session is torn down.
 Anything else would be streamed straight back into the model as if you had said
-it. Set `ROBOT_TTS=0` to mute it entirely; see the speech section of `config.py`
+it. Set `ROBOT_TTS=0` to mute it entirely; see the speech section of `robot_core/settings.py`
 for model, voice, style, output device, and cache directory.
 
 Delivery is directed in natural language rather than with rate/pitch dials —
@@ -265,7 +253,7 @@ LiPo (−) ──STAR POINT
 > single-channel DRV8871 breakouts**, one per motor, and **D7 is the right
 > encoder's B channel**. Wiring anything to D7 as an enable line will break
 > quadrature decoding on the right wheel. The authoritative pinout is the
-> header comment of `sketches/drivetrain/drivetrain.ino`.
+> header comment of `firmware/drivetrain/drivetrain.ino`.
 
 Each DRV8871 board has its own `IN1` / `IN2` inputs and its own `OUT1` / `OUT2`
 motor terminals. Per the driver's truth table (mirrored in `motorWrite()`):
@@ -380,7 +368,7 @@ consistently one-sided, and never converging.
 
 **Verify after any harness change**, before calibrating anything:
 
-1. `tests/test_encoders.py`; hand-roll each wheel in the robot's forward
+1. `tests/hardware/check_encoders.py`; hand-roll each wheel in the robot's forward
    direction. Both must count **up** — fix with `ENC_x_INVERT` and re-flash.
 2. In the same test, roll the **left** wheel only. `enc_left` must be the
    counter that moves. If `enc_right` moves instead, the pairing is crossed.
@@ -391,7 +379,7 @@ Only once all four pass are the calibration numbers meaningful.
 
 ### Calibration
 
-Two constants in `config.py`, both overridable by environment variable so you
+Two constants in `robot_core/settings.py`, both overridable by environment variable so you
 can calibrate without editing code:
 
 | Constant | Env var | Governs |
@@ -455,5 +443,5 @@ Bits can combine (e.g. `3` = power-on + reset pin).
 
 Wire the white B wires: left → D4, right → D7 (blue → 5V, green → GND, yellow → D2/D3 as before).
 Flash (./flash.sh or IDE) — confirm the drv8871-v4-quad stamp.
-Calibrate polarity: run tests/test_encoders.py, roll each wheel in the robot's forward direction by hand. Both must count up. A side counting down → set its ENC_x_INVERT to 1, re-flash, re-check.
-Then test_bot_movements.py — with working, signed encoders this should be the first honest closed-loop run the bot has ever had.
+Calibrate polarity: run tests/hardware/check_encoders.py, roll each wheel in the robot's forward direction by hand. Both must count up. A side counting down → set its ENC_x_INVERT to 1, re-flash, re-check.
+Then tests/hardware/check_movements.py — with working, signed encoders this should be the first honest closed-loop run the bot has ever had.
